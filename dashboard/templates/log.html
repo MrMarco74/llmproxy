@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Request Log — llmproxy{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-4 mb-4">
+  <h1 class="text-xl font-bold text-[#b4befe]">Request Log</h1>
+  <span class="text-sm text-[#7f849c]">{{ "{:,}".format(total).replace(",",".") }} Einträge gesamt</span>
+  <div class="ml-auto flex gap-2 text-sm">
+    {% for lim in [25, 50, 100, 200] %}
+    <a href="/log?limit={{ lim }}&page=1"
+       class="px-3 py-1 rounded {% if limit == lim %}bg-[#45475a] text-white{% else %}bg-[#1e1e2e] text-[#7f849c]{% endif %}">
+      {{ lim }}
+    </a>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card mb-4 overflow-x-auto">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:130px">Datum / Zeit</th>
+        <th style="width:110px">IP</th>
+        <th style="width:130px">Hostname</th>
+        <th style="width:160px">Modell</th>
+        <th style="width:70px;text-align:right">Tokens</th>
+        <th style="width:70px;text-align:right">Dauer</th>
+        <th style="width:40px;text-align:center">HTTP</th>
+        <th>Prompt</th>
+        <th>Response</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+    {% set time_part = r.ts.split('T')[1] if r.ts and 'T' in r.ts else (r.ts or '')[-8:] %}
+    <tr class="log-row">
+      <td class="text-[#585b70] whitespace-nowrap">
+        <span class="text-[#cdd6f4]">{{ r.date or '' }}</span><br>
+        <span class="text-xs">{{ time_part }}</span>
+      </td>
+      <td class="text-[#89b4fa] font-mono text-xs">{{ r.client_ip or '—' }}</td>
+      <td class="text-[#cba6f7] text-xs">
+        {% if r.hostname and r.hostname != r.client_ip %}
+          {{ r.hostname }}
+        {% else %}
+          <span class="text-[#45475a]">—</span>
+        {% endif %}
+      </td>
+      <td class="text-xs text-[#a6e3a1]">{{ r.model or '—' }}</td>
+      <td class="text-right text-xs">{{ "{:,}".format(r.total_tokens or 0).replace(",",".") }}</td>
+      <td class="text-right text-xs">
+        {% if r.duration_s %}{{ "%.1f"|format(r.duration_s) }}s{% else %}—{% endif %}
+      </td>
+      <td class="text-center text-xs">
+        {% if r.status_code == 200 %}
+          <span style="color:#a6e3a1">{{ r.status_code }}</span>
+        {% elif r.status_code %}
+          <span style="color:#f38ba8">{{ r.status_code }}</span>
+        {% else %}—{% endif %}
+      </td>
+      <td class="text-xs" style="max-width:280px">
+        {% if r.prompt_text %}
+          <span class="log-snippet" data-full="{{ r.prompt_text | e }}">{{ r.prompt_text[:120] | e }}{% if r.prompt_text|length > 120 %}…{% endif %}</span>
+          {% if r.prompt_text|length > 120 %}
+          <button class="expand-btn" onclick="expand(this)">mehr</button>
+          {% endif %}
+        {% else %}<span class="text-[#45475a]">—</span>{% endif %}
+      </td>
+      <td class="text-xs" style="max-width:280px">
+        {% if r.response_text %}
+          <span class="log-snippet" data-full="{{ r.response_text | e }}">{{ r.response_text[:120] | e }}{% if r.response_text|length > 120 %}…{% endif %}</span>
+          {% if r.response_text|length > 120 %}
+          <button class="expand-btn" onclick="expand(this)">mehr</button>
+          {% endif %}
+        {% else %}<span class="text-[#45475a]">—</span>{% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="9" class="text-[#585b70] text-center py-6">Keine Einträge</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Pagination -->
+{% set pages = ((total - 1) // limit + 1) if total > 0 else 1 %}
+{% if pages > 1 %}
+<div class="flex gap-2 items-center text-sm">
+  {% if page > 1 %}
+  <a href="/log?page={{ page - 1 }}&limit={{ limit }}" class="px-3 py-1 rounded bg-[#1e1e2e] text-[#89b4fa]">← zurück</a>
+  {% endif %}
+  <span class="text-[#7f849c]">Seite {{ page }} / {{ pages }}</span>
+  {% if page < pages %}
+  <a href="/log?page={{ page + 1 }}&limit={{ limit }}" class="px-3 py-1 rounded bg-[#1e1e2e] text-[#89b4fa]">weiter →</a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<style>
+  .expand-btn {
+    margin-left: 4px;
+    font-size: 10px;
+    color: #89b4fa;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    vertical-align: baseline;
+  }
+  .expand-btn:hover { text-decoration: underline; }
+  .log-snippet { white-space: pre-wrap; word-break: break-word; color: #cdd6f4; }
+</style>
+<script>
+function expand(btn) {
+  const span = btn.previousElementSibling;
+  span.textContent = span.dataset.full;
+  btn.textContent = 'weniger';
+  btn.onclick = function() {
+    span.textContent = span.dataset.full.slice(0, 120) + (span.dataset.full.length > 120 ? '…' : '');
+    btn.textContent = 'mehr';
+    btn.onclick = function() { expand(btn); };
+  };
+}
+</script>
+{% endblock %}

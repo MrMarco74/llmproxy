@@ -1,0 +1,15 @@
+[Unit]
+Description=gpu-agent — Stats-Endpoint für GPU/CPU/RAM/Gaming-Mode (für llmproxy auf dem Proxy-Host)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/llmproxy/gpu-agent.py
+WorkingDirectory=/opt/llmproxy
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

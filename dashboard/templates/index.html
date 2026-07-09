@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+{% block title %}Live — llmproxy{% endblock %}
+
+{% block content %}
+<!-- Gaming Mode Controls -->
+<div class="flex items-center gap-4 mb-4">
+  <div id="gaming-banner" class="hidden flex-1 text-center py-2 rounded-lg font-bold text-lg"
+       style="background:#f38ba8;color:#1e1e2e;">
+    🎮 GAMING MODE — LLM-Anfragen werden geblockt
+  </div>
+  <div class="card flex items-center gap-3 p-3 flex-none ml-auto">
+    <span class="text-sm font-semibold text-[#b4befe]">Gaming Mode:</span>
+    <select id="gaming-override-select" onchange="setGamingOverride(this.value)" class="bg-[#181825] text-sm text-[#cdd6f4] border border-[#313244] rounded px-2 py-1 outline-none focus:border-[#cba6f7]">
+      <option value="auto">Auto (Steam)</option>
+      <option value="on">Immer An (Dienste aus)</option>
+      <option value="off">Immer Aus</option>
+    </select>
+  </div>
+</div>
+
+<!-- Top Stats Row -->
+<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+  <div class="card text-center">
+    <div class="text-[#7f849c] text-xs mb-1">GPU #0 Auslastung</div>
+    <div id="gpu0-load" class="text-2xl font-bold text-[#cba6f7]">—</div>
+    <div class="progress-bar mt-2"><div id="gpu0-load-bar" class="progress-fill bg-[#cba6f7]" style="width:0%"></div></div>
+  </div>
+  <div class="card text-center">
+    <div class="text-[#7f849c] text-xs mb-1">VRAM #0</div>
+    <div id="gpu0-vram" class="text-2xl font-bold text-[#89b4fa]">—</div>
+    <div id="gpu0-vram-abs" class="text-xs text-[#7f849c] mt-1">—</div>
+    <div class="progress-bar mt-1"><div id="gpu0-vram-bar" class="progress-fill bg-[#89b4fa]" style="width:0%"></div></div>
+  </div>
+  <div class="card text-center">
+    <div class="text-[#7f849c] text-xs mb-1">GPU #1 Auslastung</div>
+    <div id="gpu1-load" class="text-2xl font-bold text-[#cba6f7]">—</div>
+    <div class="progress-bar mt-2"><div id="gpu1-load-bar" class="progress-fill bg-[#cba6f7]" style="width:0%"></div></div>
+  </div>
+  <div class="card text-center">
+    <div class="text-[#7f849c] text-xs mb-1">VRAM #1</div>
+    <div id="gpu1-vram" class="text-2xl font-bold text-[#89b4fa]">—</div>
+    <div id="gpu1-vram-abs" class="text-xs text-[#7f849c] mt-1">—</div>
+    <div class="progress-bar mt-1"><div id="gpu1-vram-bar" class="progress-fill bg-[#89b4fa]" style="width:0%"></div></div>
+  </div>
+  <div class="card text-center">
+    <div class="text-[#7f849c] text-xs mb-1">CPU</div>
+    <div id="cpu-pct" class="text-2xl font-bold text-[#fab387]">—</div>
+    <div class="progress-bar mt-2"><div id="cpu-bar" class="progress-fill bg-[#fab387]" style="width:0%"></div></div>
+  </div>
+  <div class="card text-center">
+    <div class="text-[#7f849c] text-xs mb-1">RAM</div>
+    <div id="ram-pct" class="text-2xl font-bold text-[#a6e3a1]">—</div>
+    <div id="ram-abs" class="text-xs text-[#7f849c] mt-1">—</div>
+    <div class="progress-bar mt-1"><div id="ram-bar" class="progress-fill bg-[#a6e3a1]" style="width:0%"></div></div>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+  <!-- Hardware Detail -->
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3">Hardware</h2>
+    <div id="hw-detail" class="space-y-2 text-sm"></div>
+  </div>
+
+  <!-- Loaded Models -->
+  <div class="card">
+    <div class="flex items-center gap-3 mb-3">
+      <h2 class="font-semibold text-[#b4befe]">Geladene Modelle</h2>
+      <button id="purge-vram-btn" onclick="purgeVram()"
+              class="ml-auto text-xs px-3 py-1.5 rounded-md border border-[#f38ba8] text-[#f38ba8] hover:bg-[#f38ba8] hover:text-[#1e1e2e] transition"
+              title="Entlädt alle aktuell geladenen Modelle sofort aus dem VRAM (keep_alive=0)">
+        🔥 VRAM purgen
+      </button>
+      <span id="purge-vram-result" class="text-xs text-[#7f849c]"></span>
+    </div>
+    <div id="models-list" class="space-y-2 text-sm">
+      <span class="text-[#585b70]">Keine Modelle geladen.</span>
+    </div>
+  </div>
+
+  <!-- Live Token Sparkline -->
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3">Tokens/s Live</h2>
+    <canvas id="tps-chart" height="120"></canvas>
+    <div id="active-requests" class="mt-2 space-y-1"></div>
+    <div class="mt-2 grid grid-cols-2 gap-2 text-xs text-[#7f849c]">
+      <div>Letzter Request: <span id="last-req-ts" class="text-[#cdd6f4]">—</span></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Recent Requests -->
+<div class="card mt-4">
+  <h2 class="font-semibold text-[#b4befe] mb-3">Letzte Requests</h2>
+  <div class="overflow-x-auto">
+    <table>
+      <thead>
+        <tr>
+          <th>Zeit</th><th>Modell</th><th>Client</th>
+          <th>Tokens</th><th>tps</th><th>Dauer</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="recent-tbody">
+        <tr><td colspan="7" class="text-[#585b70] text-center py-4">Warte auf Daten …</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function purgeVram() {
+  const btn = document.getElementById('purge-vram-btn');
+  const result = document.getElementById('purge-vram-result');
+  if (!confirm('Alle aktuell geladenen Modelle sofort aus dem VRAM entladen?')) return;
+  btn.disabled = true;
+  result.textContent = 'purge läuft …';
+  try {
+    const r = await fetch('/api/purge-vram', {method: 'POST'});
+    const data = await r.json();
+    result.textContent = data.ok
+      ? (data.evicted.length ? `✅ entladen: ${data.evicted.join(', ')}` : '✅ keine Modelle geladen')
+      : `❌ ${data.error || 'Fehler'}`;
+  } catch (e) {
+    result.textContent = `❌ ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function setGamingOverride(val) {
+  try {
+    await fetch('/api/proxy/gaming_override', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({override: val})
+    });
+  } catch (e) {
+    console.error('Failed to set gaming override', e);
+  }
+}
+
+// TPS Sparkline
+const tpsData = { labels: [], datasets: [{
+  label: 'tokens/s', data: [],
+  borderColor: '#a6e3a1', backgroundColor: 'rgba(166,227,161,0.1)',
+  tension: 0.3, pointRadius: 0, fill: true,
+}]};
+const tpsChart = new Chart(document.getElementById('tps-chart'), {
+  type: 'line',
+  data: tpsData,
+  options: {
+    animation: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { display: false },
+      y: { grid: { color: '#313244' }, ticks: { color: '#7f849c' }, min: 0 }
+    }
+  }
+});
+
+function pushTps(val) {
+  const now = new Date().toLocaleTimeString('de-DE');
+  tpsData.labels.push(now);
+  tpsData.datasets[0].data.push(val);
+  if (tpsData.labels.length > 60) {
+    tpsData.labels.shift();
+    tpsData.datasets[0].data.shift();
+  }
+  tpsChart.update('none');
+}
+
+function pct(used, total) { return total > 0 ? Math.round(used/total*100) : 0; }
+
+function tempColor(t) {
+  if (t >= 80) return '#f38ba8';
+  if (t >= 70) return '#fab387';
+  return '#a6e3a1';
+}
+
+function updateHW(hw) {
+  if (!hw || !hw.gpus) return;
+  const gpus = hw.gpus;
+  document.getElementById('last-update').textContent = 'aktualisiert ' + timeAgo(hw.ts);
+
+  for (let i = 0; i < 2; i++) {
+    const g = gpus[i];
+    const loadEl   = document.getElementById(`gpu${i}-load`);
+    const vramEl   = document.getElementById(`gpu${i}-vram`);
+    const vramAbs  = document.getElementById(`gpu${i}-vram-abs`);
+    const loadBar  = document.getElementById(`gpu${i}-load-bar`);
+    const vramBar  = document.getElementById(`gpu${i}-vram-bar`);
+    if (!g) {
+      loadEl.textContent = '—'; vramEl.textContent = '—';
+      continue;
+    }
+    const vp = pct(g.ram_used, g.ram_total);
+    loadEl.textContent = g.load_pct.toFixed(0) + '%';
+    vramEl.textContent = vp + '%';
+    if (vramAbs) vramAbs.textContent = fmtMB(g.ram_used) + ' / ' + fmtMB(g.ram_total);
+    loadBar.style.width = g.load_pct + '%';
+    vramBar.style.width = vp + '%';
+    loadBar.style.background = tempColor(g.temp_c);
+    vramBar.style.background = vp > 90 ? '#f38ba8' : vp > 75 ? '#fab387' : '#89b4fa';
+  }
+
+  // CPU + RAM stat cards
+  document.getElementById('cpu-pct').textContent = (hw.cpu_pct ?? 0).toFixed(0) + '%';
+  document.getElementById('cpu-bar').style.width = (hw.cpu_pct ?? 0) + '%';
+  document.getElementById('cpu-bar').style.background = hw.cpu_pct > 85 ? '#f38ba8' : hw.cpu_pct > 60 ? '#fab387' : '#fab387';
+
+  const rp = hw.ram_pct ?? 0;
+  document.getElementById('ram-pct').textContent = rp.toFixed(0) + '%';
+  document.getElementById('ram-bar').style.width = rp + '%';
+  document.getElementById('ram-bar').style.background = rp > 90 ? '#f38ba8' : rp > 75 ? '#fab387' : '#a6e3a1';
+  document.getElementById('ram-abs').textContent = fmtMB(hw.ram_used) + ' / ' + fmtMB(hw.ram_total);
+
+  const detail = document.getElementById('hw-detail');
+  let html = `<div>CPU: <b>${hw.cpu_pct?.toFixed(1)}%</b></div>
+    <div>RAM: <b>${fmtMB(hw.ram_used)} / ${fmtMB(hw.ram_total)}</b> (${hw.ram_pct?.toFixed(0)}%)</div>`;
+  for (const g of gpus) {
+    let pw = '';
+    if (g.power_w) {
+      pw = ` &nbsp; ${g.power_w.toFixed(0)}W`;
+      if (g.power_limit) {
+        if (g.power_default) {
+          pw += ` <span style="font-size:0.85em; opacity:0.8">(${g.power_limit.toFixed(0)}W / ${g.power_default.toFixed(0)}W)</span>`;
+        } else {
+          pw += ` <span style="font-size:0.85em; opacity:0.8">(${g.power_limit.toFixed(0)}W)</span>`;
+        }
+      }
+    }
+    html += `<div style="color:${tempColor(g.temp_c)}">GPU #${g.index}: ${g.load_pct.toFixed(0)}% &nbsp; ${g.temp_c.toFixed(0)}°C${pw}</div>`;
+    html += `<div class="progress-bar"><div class="progress-fill" style="width:${pct(g.ram_used,g.ram_total)}%;background:#89b4fa"></div></div>`;
+    html += `<div class="text-[#7f849c] text-xs">${fmt(g.ram_used)} / ${fmt(g.ram_total)} MB VRAM</div>`;
+  }
+  detail.innerHTML = html;
+}
+
+function updateModels(models) {
+  const el = document.getElementById('models-list');
+  if (!models || !models.length) {
+    el.innerHTML = '<span class="text-[#585b70]">Keine Modelle geladen.</span>';
+    return;
+  }
+  el.innerHTML = models.map(m => {
+    const vram = (m.size_vram / 1073741824).toFixed(1);
+    const ctx  = Math.round((m.context_length || 0) / 1024);
+    const col  = m.context_length >= 32768 ? '#f38ba8' : m.context_length > 8192 ? '#fab387' : '#a6e3a1';
+    return `<div style="color:${col}">• ${m.name} &mdash; ${vram} GB VRAM &nbsp; ctx: ${ctx}k</div>`;
+  }).join('');
+}
+
+function updateActive(active) {
+  const el = document.getElementById('active-requests');
+  if (!active || !active.length) {
+    el.innerHTML = '<div class="text-xs text-[#585b70]">Kein laufender Request.</div>';
+    return;
+  }
+  el.innerHTML = active.map(a =>
+    `<div class="text-xs rounded px-2 py-1 flex justify-between" style="background:#181825;border:1px solid #a6e3a133">
+      <span style="color:#a6e3a1">▶ ${escHtml(a.model)}</span>
+      <span class="text-[#7f849c]">${a.client_ip} &nbsp; ${a.elapsed_s}s</span>
+    </div>`
+  ).join('');
+}
+
+function updateRecent(recent) {
+  if (!recent || !recent.length) return;
+  const tb = document.getElementById('recent-tbody');
+  document.getElementById('last-req-ts').textContent  = recent[0]?.ts ?? '—';
+  pushTps(recent[0]?.tokens_per_second ?? 0);
+
+  tb.innerHTML = recent.map(r => {
+    const sc    = r.status_code;
+    const scCol = sc === 200 ? '#a6e3a1' : sc === 503 ? '#fab387' : '#f38ba8';
+    return `<tr>
+      <td class="text-[#7f849c]">${r.ts}</td>
+      <td>${r.model}</td>
+      <td class="text-[#89b4fa]">${r.client_ip}</td>
+      <td>${fmt(r.total_tokens ?? (r.prompt_tokens+r.completion_tokens))}</td>
+      <td>${fmtTps(r.tokens_per_second)}</td>
+      <td>${r.duration_s?.toFixed(1)}s</td>
+      <td style="color:${scCol}">${sc}</td>
+    </tr>`;
+  }).join('');
+}
+
+// SSE connection
+const evtSrc = new EventSource('/events');
+evtSrc.onmessage = (e) => {
+  try {
+    const data = JSON.parse(e.data);
+    document.getElementById('gaming-banner').classList.toggle('hidden', !data.gaming_mode);
+    if (data.gaming_override) {
+      document.getElementById('gaming-override-select').value = data.gaming_override;
+    }
+    updateHW(data.hw);
+    updateModels(data.models);
+    if (data.recent) updateRecent(data.recent);
+    updateActive(data.active || []);
+    if (typeof data.unread_count === 'number') updateNotifBadge(data.unread_count);
+  } catch(err) { console.error(err); }
+};
+evtSrc.onerror = () => {
+  document.getElementById('last-update').textContent = '⚠ Verbindung verloren';
+};
+</script>
+{% endblock %}

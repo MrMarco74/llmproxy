@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=LLM Monitor
+GenericName=LLM Performance Monitor
+Comment=Live LLM performance monitor — CPU, GPU, VRAM, Tokens
+Exec=llm-monitor
+Icon=llm-monitor
+Terminal=false
+Categories=System;Monitor;Utility;
+Keywords=llm;ollama;ai;gpu;monitor;tokens;
+StartupWMClass=LLMMonitorGUI
+StartupNotify=true

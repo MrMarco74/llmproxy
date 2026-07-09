@@ -1,0 +1,22 @@
+services:
+  llmproxy-dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+      network: host
+    container_name: llmproxy-dashboard
+    ports:
+      - "18080:8000"
+    volumes:
+      - /root/.llmproxy.db:/data/llmproxy.db:ro
+    environment:
+      - LLMPROXY_STATUS_URL=http://host.docker.internal:11435
+      - DB_PATH=/data/llmproxy.db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/stats/summary')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

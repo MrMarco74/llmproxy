@@ -1,0 +1,15 @@
+[Unit]
+Description=llmproxy — Ollama + ComfyUI logging proxy (forwards to the GPU host over the network)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/llmproxy/proxy/llmproxy.py
+WorkingDirectory=/opt/llmproxy/proxy
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

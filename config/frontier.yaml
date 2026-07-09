@@ -1,0 +1,14 @@
+enabled: true
+providers:
+  gemini:
+    api_key: ''
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    models:
+    - gemini-1.5-pro
+    - gemini-1.5-flash
+  openrouter_claude:
+    api_key: ''
+    base_url: https://openrouter.ai/api/v1
+    models:
+    - anthropic/claude-3.5-sonnet
+    - anthropic/claude-3-opus

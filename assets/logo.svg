@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect x="0" y="0" width="512" height="512" rx="115" fill="#11111b"/>
+
+  <!-- client nodes -->
+  <circle cx="110" cy="140" r="22" fill="#cdd6f4"/>
+  <circle cx="90"  cy="256" r="22" fill="#cdd6f4"/>
+  <circle cx="110" cy="372" r="22" fill="#cdd6f4"/>
+
+  <!-- lines: clients -> proxy hub -->
+  <line x1="128" y1="150" x2="270" y2="240" stroke="#585b70" stroke-width="10" stroke-linecap="round"/>
+  <line x1="112" y1="256" x2="270" y2="256" stroke="#585b70" stroke-width="10" stroke-linecap="round"/>
+  <line x1="128" y1="362" x2="270" y2="272" stroke="#585b70" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- proxy hub -->
+  <circle cx="300" cy="256" r="46" fill="#89b4fa"/>
+
+  <!-- hub -> GPU host -->
+  <line x1="340" y1="256" x2="392" y2="256" stroke="#585b70" stroke-width="12" stroke-linecap="round"/>
+
+  <!-- GPU host node -->
+  <circle cx="424" cy="256" r="38" fill="#a6e3a1"/>
+  <rect x="405" y="238" width="38" height="36" rx="6" fill="#11111b"/>
+  <rect x="411" y="244" width="26" height="24" rx="3" fill="#a6e3a1"/>
+</svg>

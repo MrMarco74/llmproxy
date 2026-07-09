@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Failures — llmproxy{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-4 mb-6">
+  <h1 class="text-xl font-bold text-[#b4befe]">Failure-Analyse</h1>
+  <span class="text-sm text-[#7f849c]">letzte {{ limit }} Einträge</span>
+  <button id="cleanup-btn" onclick="runCleanup(false)"
+          class="ml-auto text-xs px-3 py-1.5 rounded-md border border-[#45475a] text-[#cdd6f4] hover:bg-[#313244] transition"
+          title="Löscht failures > 14 Tage, notifications > 30 Tage, requests > 180 Tage und führt VACUUM aus">
+    🧹 Logs aufräumen
+  </button>
+  <button id="purge-btn" onclick="runCleanup(true)"
+          class="text-xs px-3 py-1.5 rounded-md border border-[#f38ba8] text-[#f38ba8] hover:bg-[#f38ba8] hover:text-[#1e1e2e] transition"
+          title="Löscht ALLE failures, notifications und requests unwiderruflich">
+    🔥 Logs komplett purgen
+  </button>
+  <span id="cleanup-result" class="text-xs text-[#7f849c]"></span>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+
+  <!-- By Reason -->
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3">Fehler nach Grund</h2>
+    {% for r in by_reason %}
+    <div class="flex justify-between items-center mb-2">
+      <span class="text-sm font-mono">{{ r.failure_reason }}</span>
+      <span class="text-[#f38ba8] font-bold">{{ r.count }}</span>
+    </div>
+    <div class="progress-bar mb-3">
+      <div class="progress-fill bg-[#f38ba8]"
+           style="width:{{ (r.count / (by_reason[0].count if by_reason else 1) * 100)|round }}%"></div>
+    </div>
+    {% else %}
+    <span class="text-[#585b70]">Keine Failures</span>
+    {% endfor %}
+  </div>
+
+  <!-- By Model -->
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3">Fehler nach Modell</h2>
+    <div class="overflow-x-auto">
+      <table>
+        <thead><tr><th>Modell</th><th>Failures</th></tr></thead>
+        <tbody>
+        {% for m in by_model %}
+        <tr>
+          <td>{{ m.model }}</td>
+          <td class="text-[#f38ba8] font-bold">{{ m.count }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="2" class="text-[#585b70] text-center py-3">Keine Daten</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<!-- Failure Log -->
+<div class="card">
+  <h2 class="font-semibold text-[#b4befe] mb-3">Letzte Failures</h2>
+  <div class="overflow-x-auto">
+    <table>
+      <thead>
+        <tr><th>Zeit</th><th>Modell</th><th>Client</th><th>Grund</th><th>Status</th><th>User-Message (gekürzt)</th></tr>
+      </thead>
+      <tbody>
+      {% for f in failures %}
+      <tr>
+        <td class="text-[#7f849c] whitespace-nowrap">{{ f.ts }}</td>
+        <td>{{ f.model }}</td>
+        <td class="text-[#89b4fa]">{{ f.client_ip }}</td>
+        <td>
+          {% set rc = f.failure_reason %}
+          {% if rc == 'upstream_error' %}<span class="text-[#f38ba8]">{{ rc }}</span>
+          {% elif rc == 'tool_ignored'  %}<span class="text-[#fab387]">{{ rc }}</span>
+          {% elif rc == 'tps_anomaly'   %}<span class="text-[#f9e2af]">{{ rc }}</span>
+          {% elif rc == 'model_evicted' %}<span class="text-[#cba6f7]">{{ rc }}</span>
+          {% else %}<span>{{ rc }}</span>{% endif %}
+        </td>
+        <td>{{ f.status_code }}</td>
+        <td class="text-[#7f849c] text-xs max-w-xs truncate" title="{{ f.last_user_message }}">
+          {{ f.last_user_message[:80] if f.last_user_message else '—' }}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="text-[#585b70] text-center py-6">Keine Failures — alles grün 🟢</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+async function runCleanup(full) {
+  const cleanupBtn = document.getElementById('cleanup-btn');
+  const purgeBtn = document.getElementById('purge-btn');
+  const result = document.getElementById('cleanup-result');
+
+  if (full) {
+    if (!confirm('⚠️ ALLE Logs unwiderruflich löschen?\n\nALLE failures, notifications und requests werden komplett geleert (VACUUM). Das kann nicht rückgängig gemacht werden.')) return;
+    const typed = prompt('Zur Bestätigung "PURGE" eingeben:');
+    if (typed !== 'PURGE') { result.textContent = 'abgebrochen'; return; }
+  } else {
+    if (!confirm('Alte Log-Einträge löschen?\n\nfailures > 14 Tage, notifications > 30 Tage, requests > 180 Tage werden entfernt (VACUUM).')) return;
+  }
+
+  cleanupBtn.disabled = true;
+  purgeBtn.disabled = true;
+  result.textContent = full ? 'purge läuft …' : 'räume auf …';
+  try {
+    const r = await fetch(`/api/cleanup?full=${full}`, {method: 'POST'});
+    const data = await r.json();
+    if (data.ok) {
+      const d = data.deleted;
+      result.textContent = `✅ gelöscht: ${d.failures} failures, ${d.notifications} notifications, ${d.requests} requests — ${data.size_before_mb} MB → ${data.size_after_mb} MB`;
+      setTimeout(() => location.reload(), 2500);
+    } else {
+      result.textContent = `❌ Fehler: ${data.error || 'unbekannt'}`;
+    }
+  } catch (e) {
+    result.textContent = `❌ Fehler: ${e}`;
+  } finally {
+    cleanupBtn.disabled = false;
+    purgeBtn.disabled = false;
+  }
+}
+</script>
+{% endblock %}

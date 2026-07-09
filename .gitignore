@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.claude/
+.aider*
+.env
+*.env
+venv/
+.venv/
+*.log
+.admin_token

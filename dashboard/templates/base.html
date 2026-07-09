@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}llmproxy Dashboard{% endblock %}</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <script src="/static/vendor/tailwind.js"></script>
+  <script src="/static/vendor/chart.umd.min.js"></script>
+  <style>
+    body { background: #0f1117; color: #cdd6f4; font-family: 'Segoe UI', system-ui, sans-serif; }
+    .card { background: #1e1e2e; border: 1px solid #313244; border-radius: 8px; padding: 1rem; }
+    .badge-gaming { background: #f38ba8; color: #1e1e2e; padding: 2px 10px; border-radius: 12px; font-weight: bold; }
+    .badge-ok     { background: #a6e3a1; color: #1e1e2e; padding: 2px 10px; border-radius: 12px; }
+    .nav-link { padding: 6px 14px; border-radius: 6px; transition: background 0.15s; }
+    .nav-link:hover { background: #313244; }
+    .nav-link.active { background: #45475a; }
+    .progress-bar { height: 6px; border-radius: 3px; background: #313244; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; padding: 8px 12px; color: #7f849c; font-size: 12px; text-transform: uppercase; border-bottom: 1px solid #313244; }
+    td { padding: 8px 12px; border-bottom: 1px solid #1e1e2e; font-size: 13px; }
+    tr:hover td { background: #181825; }
+
+    /* Notification bell */
+    #notif-btn { position: relative; background: none; border: none; cursor: pointer;
+                 font-size: 18px; padding: 4px 8px; border-radius: 6px; transition: background 0.15s; }
+    #notif-btn:hover { background: #313244; }
+    #notif-badge { position: absolute; top: -2px; right: -2px; background: #f38ba8; color: #1e1e2e;
+                   border-radius: 10px; font-size: 10px; font-weight: bold;
+                   min-width: 16px; height: 16px; line-height: 16px; text-align: center;
+                   padding: 0 3px; display: none; }
+    #notif-panel { display: none; position: absolute; right: 8px; top: 52px; z-index: 100;
+                   width: 380px; max-height: 480px; overflow-y: auto;
+                   background: #1e1e2e; border: 1px solid #45475a; border-radius: 8px;
+                   box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+    #notif-panel.open { display: block; }
+    .notif-item { padding: 10px 14px; border-bottom: 1px solid #313244; cursor: pointer; }
+    .notif-item:hover { background: #181825; }
+    .notif-item:last-child { border-bottom: none; }
+    .notif-item.unread .notif-title { color: #cdd6f4; font-weight: 600; }
+    .notif-item.read .notif-title { color: #7f849c; }
+    .notif-title { font-size: 13px; margin-bottom: 2px; }
+    .notif-msg   { font-size: 12px; color: #7f849c; }
+    .notif-ts    { font-size: 11px; color: #585b70; margin-top: 2px; }
+    .notif-header { display: flex; justify-content: space-between; align-items: center;
+                    padding: 10px 14px; border-bottom: 1px solid #313244; }
+    .notif-header-title { font-size: 13px; font-weight: bold; color: #b4befe; }
+    .notif-read-all { font-size: 11px; color: #89b4fa; cursor: pointer; background: none; border: none; }
+    .notif-read-all:hover { text-decoration: underline; }
+    .notif-empty { padding: 20px; text-align: center; color: #585b70; font-size: 13px; }
+    .priority-urgent .notif-title::before { content: '🔴 '; }
+    .priority-high .notif-title::before   { content: '🟠 '; }
+    .priority-default .notif-title::before{ content: '🔵 '; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+<!-- Nav -->
+<nav class="flex items-center gap-2 px-6 py-3 border-b border-[#313244]" style="position:relative">
+  <span class="font-bold text-[#b4befe] mr-4 flex items-center gap-2">
+    <img src="/static/logo.png" alt="llmproxy" class="w-6 h-6 rounded">
+    llmproxy
+  </span>
+  <a href="/"        class="nav-link {% if request.url.path == '/' %}active{% endif %}">Live</a>
+  <a href="/history" class="nav-link {% if '/history' in request.url.path %}active{% endif %}">Verlauf</a>
+  <a href="/failures"class="nav-link {% if '/failures' in request.url.path %}active{% endif %}">Failures</a>
+  <a href="/log"     class="nav-link {% if '/log' in request.url.path %}active{% endif %}">Log</a>
+  <a href="/trends"  class="nav-link {% if '/trends' in request.url.path %}active{% endif %}">Trends</a>
+  <a href="/changelog" class="nav-link {% if '/changelog' in request.url.path %}active{% endif %}">Updates</a>
+  <a href="/admin"   class="nav-link {% if '/admin' in request.url.path %}active{% endif %}">Admin</a>
+  <a href="/setup"   class="nav-link {% if '/setup' in request.url.path %}active{% endif %}">Setup</a>
+  <span class="ml-auto flex items-center gap-3">
+    <span class="text-xs text-[#585b70]" id="last-update">—</span>
+    <button id="stop-all-btn" title="Stop All / Resume" onclick="toggleStopAll()"
+      style="border:none; border-radius:6px; padding:4px 12px; cursor:pointer; font-size:13px; font-weight:bold; transition:background 0.2s; background:#313244; color:#cdd6f4;">
+      ⏹ Stop All
+    </button>
+    <button id="settings-btn" title="Einstellungen" onclick="openSettings()" style="background:none; border:none; cursor:pointer; font-size:18px; padding:4px 8px; border-radius:6px;">
+      ⚙️
+    </button>
+    <button id="notif-btn" title="Notifications">
+      🔔
+      <span id="notif-badge"></span>
+    </button>
+  </span>
+</nav>
+
+<!-- Notification panel -->
+<div id="notif-panel">
+  <div class="notif-header">
+    <span class="notif-header-title">Notifications</span>
+    <button class="notif-read-all" onclick="markAllRead()">Alle gelesen</button>
+  </div>
+  <div id="notif-list">
+    <div class="notif-empty">Keine Notifications</div>
+  </div>
+</div>
+
+<!-- Settings modal -->
+<div id="settings-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; justify-content:center; align-items:center;">
+  <div style="background:#1e1e2e; border:1px solid #45475a; border-radius:8px; padding:20px; width:300px; box-shadow:0 8px 24px rgba(0,0,0,0.5);">
+    <h3 style="margin-top:0; color:#b4befe; font-size:16px;">⚙️ Einstellungen</h3>
+    <div style="margin-top:16px; display:flex; justify-content:space-between; align-items:center;">
+      <span style="font-size:14px; color:#cdd6f4;">Request Logging</span>
+      <label style="position:relative; display:inline-block; width:40px; height:20px;">
+        <input type="checkbox" id="logging-toggle" style="opacity:0; width:0; height:0;" onchange="toggleLogging(this)">
+        <span style="position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background-color:#313244; transition:.4s; border-radius:20px;" id="logging-slider"></span>
+        <span style="position:absolute; content:''; height:16px; width:16px; left:2px; bottom:2px; background-color:white; transition:.4s; border-radius:50%; pointer-events:none;" id="logging-knob"></span>
+      </label>
+    </div>
+    <div style="font-size:11px; color:#7f849c; margin-top:4px;">Deaktiviert das SQLite Logging von Requests & Fehlern auf der Festplatte.</div>
+    <div style="margin-top:20px; text-align:right;">
+      <button onclick="document.getElementById('settings-modal').style.display='none'" style="background:#313244; color:#cdd6f4; border:none; padding:6px 12px; border-radius:6px; cursor:pointer;">Schließen</button>
+    </div>
+  </div>
+</div>
+
+<main class="p-6">
+{% block content %}{% endblock %}
+</main>
+
+<script>
+function timeAgo(ts) {
+  const d = Math.floor((Date.now()/1000) - ts);
+  if (d < 60) return d + 's ago';
+  if (d < 3600) return Math.floor(d/60) + 'min ago';
+  return Math.floor(d/3600) + 'h ago';
+}
+function fmt(n) { return n?.toLocaleString('de-DE') ?? '—'; }
+function fmtMB(mb) {
+  if (mb == null) return '—';
+  if (mb >= 1024) return (mb/1024).toFixed(1) + ' GB';
+  return mb.toFixed(0) + ' MB';
+}
+function fmtTps(n) { return n ? n.toFixed(1) + ' t/s' : '—'; }
+
+// ── Notification bell logic ────────────────────────────────────────────────────
+let _notifUnread = 0;
+
+function updateNotifBadge(count) {
+  _notifUnread = count;
+  const badge = document.getElementById('notif-badge');
+  if (count > 0) {
+    badge.textContent = count > 99 ? '99+' : count;
+    badge.style.display = 'block';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+document.getElementById('notif-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const panel = document.getElementById('notif-panel');
+  panel.classList.toggle('open');
+  if (panel.classList.contains('open')) loadNotifications();
+});
+
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('notif-panel');
+  if (!panel.contains(e.target) && e.target.id !== 'notif-btn') {
+    panel.classList.remove('open');
+  }
+});
+
+async function loadNotifications() {
+  try {
+    const r = await fetch('/api/notifications?limit=30');
+    const data = await r.json();
+    renderNotifications(data.items || []);
+    updateNotifBadge(data.unread_count || 0);
+  } catch(e) {}
+}
+
+function renderNotifications(items) {
+  const list = document.getElementById('notif-list');
+  if (!items.length) {
+    list.innerHTML = '<div class="notif-empty">Keine Notifications</div>';
+    return;
+  }
+  list.innerHTML = items.map(n => {
+    const isUnread = !n.read_at;
+    const prio = n.priority || 'default';
+    return `<div class="notif-item ${isUnread ? 'unread' : 'read'} priority-${prio}"
+                 onclick="markRead(${n.id}, this)">
+      <div class="notif-title">${escHtml(n.title)}</div>
+      <div class="notif-msg">${escHtml(n.message)}</div>
+      <div class="notif-ts">${n.ts || ''}</div>
+    </div>`;
+  }).join('');
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function markRead(id, el) {
+  if (el.classList.contains('read')) return;
+  try {
+    const r = await fetch(`/api/notifications/${id}/read`, {method:'POST'});
+    const data = await r.json();
+    el.classList.remove('unread');
+    el.classList.add('read');
+    updateNotifBadge(data.unread_count ?? Math.max(0, _notifUnread - 1));
+  } catch(e) {}
+}
+
+async function markAllRead() {
+  try {
+    await fetch('/api/notifications/read-all', {method:'POST'});
+    updateNotifBadge(0);
+    document.querySelectorAll('.notif-item.unread').forEach(el => {
+      el.classList.remove('unread'); el.classList.add('read');
+    });
+  } catch(e) {}
+}
+
+// ── Stop-All button ────────────────────────────────────────────────────────────
+let _stopAllActive = false;
+
+function _updateStopAllBtn(active) {
+  _stopAllActive = active;
+  const btn = document.getElementById('stop-all-btn');
+  if (!btn) return;
+  if (active) {
+    btn.textContent = '▶ Resume';
+    btn.style.background = '#f38ba8';
+    btn.style.color = '#1e1e2e';
+    btn.title = 'Resume — Inference wieder erlauben';
+  } else {
+    btn.textContent = '⏹ Stop All';
+    btn.style.background = '#313244';
+    btn.style.color = '#cdd6f4';
+    btn.title = 'Stop All — alle GPU-Prozesse stoppen';
+  }
+}
+
+async function toggleStopAll() {
+  const endpoint = _stopAllActive ? '/api/proxy/maintenance/resume' : '/api/proxy/maintenance/stop-all';
+  try {
+    const r = await fetch(endpoint, {method: 'POST'});
+    const d = await r.json();
+    _updateStopAllBtn(d.stop_all ?? !_stopAllActive);
+  } catch(e) {
+    console.error('toggleStopAll failed', e);
+  }
+}
+
+async function _initStopAllStatus() {
+  try {
+    const r = await fetch('/api/proxy/health');
+    const d = await r.json();
+    if (d.stop_all !== undefined) _updateStopAllBtn(d.stop_all);
+  } catch(e) {}
+}
+document.addEventListener('DOMContentLoaded', _initStopAllStatus);
+
+// ── Settings ───────────────────────────────────────────────────────────────────
+async function openSettings() {
+  document.getElementById('settings-modal').style.display = 'flex';
+  try {
+    const r = await fetch('/api/logging');
+    const data = await r.json();
+    updateToggleUI(data.enabled);
+  } catch(e) {}
+}
+
+async function toggleLogging(el) {
+  const enabled = el.checked;
+  updateToggleUI(enabled);
+  try {
+    await fetch('/api/logging', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    });
+  } catch(e) {}
+}
+
+function updateToggleUI(enabled) {
+  const slider = document.getElementById('logging-slider');
+  const knob = document.getElementById('logging-knob');
+  document.getElementById('logging-toggle').checked = enabled;
+  if (enabled) {
+    slider.style.backgroundColor = '#a6e3a1'; // green
+    knob.style.transform = 'translateX(20px)';
+  } else {
+    slider.style.backgroundColor = '#f38ba8'; // red
+    knob.style.transform = 'translateX(0)';
+  }
+}
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

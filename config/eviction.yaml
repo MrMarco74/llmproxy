@@ -1,0 +1,12 @@
+# Idle Model Eviction — entlädt inaktive Modelle aus dem VRAM
+#
+# eviction_timeout_min: Minuten ohne Request nach denen ein Modell entladen wird
+# vram_threshold_pct:   VRAM-Auslastung ab der Eviction aktiv wird (0 = immer)
+# never_evict:          Liste von Modellen die nie entladen werden
+
+eviction_timeout_min: 20
+vram_threshold_pct: 75
+
+never_evict:
+  - "nomic-embed-text"       # kleines Embedding-Modell, schnell verfügbar halten
+  - "nomic-embed-text:latest"

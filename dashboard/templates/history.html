@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}Verlauf — llmproxy{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-4 mb-6">
+  <h1 class="text-xl font-bold text-[#b4befe]">Verlauf</h1>
+  <div class="flex gap-2 text-sm">
+    {% for d in [1, 7, 14, 30] %}
+    <a href="/history?days={{ d }}"
+       class="px-3 py-1 rounded {% if days == d %}bg-[#45475a] text-white{% else %}bg-[#1e1e2e] text-[#7f849c]{% endif %}">
+      {{ d }}d
+    </a>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+
+  <!-- Timeline Chart -->
+  <div class="card lg:col-span-2">
+    <h2 class="font-semibold text-[#b4befe] mb-3">Tokens/Tag</h2>
+    <canvas id="timeline-chart" height="80"></canvas>
+  </div>
+
+  <!-- tps/s by Model -->
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3">Durchschnittliche tps per Modell</h2>
+    <canvas id="tps-model-chart" height="200"></canvas>
+  </div>
+
+  <!-- Context vs Speed Scatter -->
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3">Context-Länge vs. tokens/s</h2>
+    <canvas id="scatter-chart" height="200"></canvas>
+  </div>
+
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+
+  <!-- By Model Table -->
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3">Modell-Übersicht</h2>
+    <div class="overflow-x-auto">
+      <table>
+        <thead><tr><th>Modell</th><th>Requests</th><th>Tokens</th><th>∅ tps</th><th>∅ TTFT</th></tr></thead>
+        <tbody>
+        {% for m in by_model %}
+        <tr>
+          <td>{{ m.model }}</td>
+          <td>{{ "{:,}".format(m.requests).replace(",",".") }}</td>
+          <td>{{ "{:,}".format(m.tokens or 0).replace(",",".") }}</td>
+          <td>{{ "%.1f"|format(m.avg_tps or 0) }}</td>
+          <td>{{ "%.2f"|format(m.avg_ttft or 0) }}s</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-[#585b70] text-center py-3">Keine Daten</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- By IP Table -->
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3">Client-Übersicht</h2>
+    <div class="overflow-x-auto">
+      <table>
+        <thead><tr><th>IP</th><th>Requests</th><th>Tokens</th><th>Fehlerrate</th></tr></thead>
+        <tbody>
+        {% for ip in by_ip %}
+        <tr>
+          <td class="text-[#89b4fa]">{{ ip.client_ip }}</td>
+          <td>{{ "{:,}".format(ip.requests).replace(",",".") }}</td>
+          <td>{{ "{:,}".format(ip.tokens or 0).replace(",",".") }}</td>
+          <td {% if ip.failure_rate_pct > 5 %}style="color:#f38ba8"{% endif %}>
+            {{ ip.failure_rate_pct or 0 }}%
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="text-[#585b70] text-center py-3">Keine Daten</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<!-- Tool Use -->
+{% if tool_stats %}
+<div class="card mb-4">
+  <h2 class="font-semibold text-[#b4befe] mb-3">Tool-Use Analyse</h2>
+  <div class="overflow-x-auto">
+    <table>
+      <thead><tr><th>Modell</th><th>Mit Tools</th><th>Tools ignoriert</th><th>Ignore-Rate</th></tr></thead>
+      <tbody>
+      {% for t in tool_stats %}
+      <tr>
+        <td>{{ t.model }}</td>
+        <td>{{ t.with_tools }}</td>
+        <td>{{ t.ignored }}</td>
+        <td {% if t.with_tools > 0 and t.ignored/t.with_tools > 0.1 %}style="color:#f38ba8"{% endif %}>
+          {{ "%.1f"|format((t.ignored / t.with_tools * 100) if t.with_tools else 0) }}%
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const COLORS = ['#cba6f7','#89b4fa','#a6e3a1','#fab387','#f38ba8','#f9e2af','#94e2d5'];
+
+// Timeline
+const tlLabels = {{ timeline | map(attribute='date') | list | tojson }};
+const tlTokens = {{ timeline | map(attribute='tokens') | list | tojson }};
+const tlBlocks = {{ timeline | map(attribute='gaming_blocks') | list | tojson }};
+
+new Chart(document.getElementById('timeline-chart'), {
+  type: 'bar',
+  data: {
+    labels: tlLabels,
+    datasets: [
+      { label: 'Tokens', data: tlTokens, backgroundColor: 'rgba(137,180,250,0.7)', yAxisID: 'y' },
+      { label: 'Gaming Blocks', data: tlBlocks, backgroundColor: 'rgba(243,139,168,0.7)', yAxisID: 'y2', type: 'line' },
+    ]
+  },
+  options: {
+    plugins: { legend: { labels: { color: '#cdd6f4' } } },
+    scales: {
+      x:  { grid: { color: '#313244' }, ticks: { color: '#7f849c' } },
+      y:  { grid: { color: '#313244' }, ticks: { color: '#7f849c' }, position: 'left' },
+      y2: { grid: { display: false  }, ticks: { color: '#f38ba8' }, position: 'right' },
+    }
+  }
+});
+
+// TPS by model
+const models  = {{ by_model | map(attribute='model') | list | tojson }};
+const avgTps  = {{ by_model | map(attribute='avg_tps') | list | tojson }};
+new Chart(document.getElementById('tps-model-chart'), {
+  type: 'bar',
+  data: {
+    labels: models,
+    datasets: [{ label: 'Ø tps', data: avgTps,
+      backgroundColor: models.map((_,i) => COLORS[i % COLORS.length]) }]
+  },
+  options: {
+    indexAxis: 'y',
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { grid: { color: '#313244' }, ticks: { color: '#7f849c' } },
+      y: { grid: { color: '#313244' }, ticks: { color: '#cdd6f4' } },
+    }
+  }
+});
+
+// Scatter: num_ctx vs tps
+const scatter = {{ scatter | tojson }};
+const modelNames = [...new Set(scatter.map(d => d.model))];
+new Chart(document.getElementById('scatter-chart'), {
+  type: 'scatter',
+  data: {
+    datasets: modelNames.map((m, i) => ({
+      label: m,
+      data: scatter.filter(d => d.model === m).map(d => ({ x: d.num_ctx, y: d.tokens_per_second })),
+      backgroundColor: COLORS[i % COLORS.length] + 'aa',
+      pointRadius: 4,
+    }))
+  },
+  options: {
+    plugins: { legend: { labels: { color: '#cdd6f4', boxWidth: 12 } } },
+    scales: {
+      x: { title: { display: true, text: 'num_ctx', color: '#7f849c' },
+           grid: { color: '#313244' }, ticks: { color: '#7f849c' } },
+      y: { title: { display: true, text: 'tokens/s', color: '#7f849c' },
+           grid: { color: '#313244' }, ticks: { color: '#7f849c' } },
+    }
+  }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,569 @@
+{% extends "base.html" %}
+{% block title %}Admin - llmproxy{% endblock %}
+
+{% block content %}
+<div class="flex gap-4 mb-6 border-b border-[#313244] pb-2">
+    <button class="nav-link tab-btn active" data-target="clients-tab">👥 Clients</button>
+    <button class="nav-link tab-btn" data-target="frontier-tab">🌐 Frontier LLMs</button>
+    <button class="nav-link tab-btn" data-target="settings-tab">⚙️ Settings</button>
+</div>
+
+<!-- Clients Tab -->
+<div id="clients-tab" class="tab-content">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold text-[#b4befe]">Client Management</h2>
+        <button onclick="openClientModal()" class="bg-[#89b4fa] text-[#1e1e2e] px-4 py-2 rounded font-bold hover:bg-[#b4befe] transition">
+            + Add Client
+        </button>
+    </div>
+    <div class="card overflow-x-auto">
+        <table class="w-full text-left">
+            <thead>
+                <tr>
+                    <th>IP / Client</th>
+                    <th>Tokens Used (Today)</th>
+                    <th>Daily Limit</th>
+                    <th>Allowed Models</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="clients-tbody">
+                <tr><td colspan="6" class="text-center py-4 text-[#7f849c]">Loading clients...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Frontier LLMs Tab -->
+<div id="frontier-tab" class="tab-content hidden">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold text-[#b4befe]">Frontier LLM Configuration</h2>
+        <label class="flex items-center gap-2 cursor-pointer">
+            <span class="text-sm">Enable Frontier Proxies</span>
+            <input type="checkbox" id="frontier-enable" class="form-checkbox h-5 w-5 text-[#89b4fa]" onchange="toggleFrontierMaster(this.checked)">
+        </label>
+    </div>
+    
+    <div class="grid grid-cols-1 gap-6" id="frontier-providers-container">
+        <!-- Providers will be rendered here dynamically -->
+    </div>
+    
+    <div class="mt-6 flex items-center">
+        <button onclick="addFrontierProvider()" class="bg-[#313244] text-[#cdd6f4] px-4 py-2 rounded hover:bg-[#45475a] transition">
+            + Add Custom Provider
+        </button>
+        <button onclick="saveFrontierConfig()" class="bg-[#a6e3a1] text-[#1e1e2e] px-4 py-2 rounded font-bold hover:bg-[#94e2d5] transition ml-auto">
+            Save Frontier Config
+        </button>
+    </div>
+</div>
+
+<!-- Settings Tab -->
+<div id="settings-tab" class="tab-content hidden">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold text-[#b4befe]">Global Settings</h2>
+    </div>
+    
+    <div class="card max-w-2xl">
+        <div class="flex justify-between items-center">
+            <div>
+                <h3 class="font-bold text-[#cdd6f4]">Database Logging</h3>
+                <p class="text-sm text-[#7f849c] mt-1">Record all LLM requests, tokens, and durations to the SQLite database.</p>
+            </div>
+            <label class="flex items-center cursor-pointer">
+                <input type="checkbox" id="logging-enable" class="form-checkbox h-6 w-6 text-[#a6e3a1]" onchange="toggleLogging(this.checked)">
+            </label>
+        </div>
+    </div>
+</div>
+
+<!-- Client Modal -->
+<div id="client-modal" class="fixed inset-0 bg-black/50 z-[200] hidden flex justify-center items-center">
+    <div class="bg-[#1e1e2e] border border-[#45475a] rounded-lg p-6 w-[400px] shadow-xl">
+        <h3 id="client-modal-title" class="text-lg font-bold text-[#b4befe] mb-4">Add Client</h3>
+        
+        <div class="mb-4">
+            <label class="block text-sm text-[#7f849c] mb-1">IP Address (or 'default')</label>
+            <input type="text" id="client-ip" class="w-full bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4]">
+        </div>
+        
+        <div class="mb-4">
+            <label class="block text-sm text-[#7f849c] mb-1">Token Limit (-1 for limitless)</label>
+            <input type="number" id="client-limit" class="w-full bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4]">
+        </div>
+        
+        <div class="mb-4">
+            <label class="block text-sm text-[#7f849c] mb-1">Allowed Local Models (Select below or type manually)</label>
+            <input type="text" id="client-models-text" class="w-full bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4] mb-2" value="*" oninput="syncModelsToText()">
+            <div class="mb-2">
+                <label class="inline-flex items-center">
+                    <input type="checkbox" id="client-models-all" class="form-checkbox text-[#89b4fa]" onchange="toggleModelSelection(this.checked)">
+                    <span class="ml-2 text-sm font-bold text-[#a6e3a1]">Allow ALL local models (*)</span>
+                </label>
+            </div>
+            <div id="client-models-container" class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[150px] overflow-y-auto bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4] text-sm">
+                <!-- Checkboxes injected by JS -->
+            </div>
+        </div>
+        
+        <div class="mb-4 flex items-center gap-2">
+            <input type="checkbox" id="client-frontier" class="form-checkbox text-[#89b4fa]" onchange="toggleFrontierSection(this.checked)">
+            <label class="text-sm font-bold text-[#cdd6f4]">Allow Frontier LLMs</label>
+        </div>
+        
+        <div class="mb-4 pl-4 border-l-2 border-[#45475a] hidden" id="frontier-models-section">
+            <label class="block text-sm text-[#7f849c] mb-1">Allowed Frontier Models</label>
+            <input type="text" id="client-frontier-text" class="w-full bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4] mb-2" value="*" oninput="syncFrontierModelsToText()">
+            <div class="mb-2">
+                <label class="inline-flex items-center">
+                    <input type="checkbox" id="client-frontier-all" class="form-checkbox text-[#89b4fa]" onchange="toggleFrontierSelection(this.checked)">
+                    <span class="ml-2 text-sm font-bold text-[#a6e3a1]">Allow ALL Frontier models (*)</span>
+                </label>
+            </div>
+            <div id="client-frontier-container" class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-[150px] overflow-y-auto bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4] text-sm">
+                <!-- Checkboxes injected by JS -->
+            </div>
+        </div>
+        
+        <div class="mb-6 flex items-center gap-2">
+            <input type="checkbox" id="client-blocked" class="form-checkbox text-[#f38ba8]">
+            <label class="text-sm">Block Client</label>
+        </div>
+        
+        <div class="flex justify-end gap-2">
+            <button onclick="closeClientModal()" class="px-4 py-2 rounded bg-[#313244] hover:bg-[#45475a] text-white">Cancel</button>
+            <button onclick="saveClient()" class="px-4 py-2 rounded bg-[#89b4fa] hover:bg-[#b4befe] text-[#1e1e2e] font-bold">Save</button>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let clientsData = {};
+let frontierData = {enabled: false, providers: {}};
+let localModels = [];
+let frontierModels = [];
+
+async function initAdmin() {
+    await fetchClients();
+    await fetchFrontier();
+    await fetchLoggingConfig();
+    fetchModels();
+}
+
+// Tab Switching
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+        e.target.classList.add('active');
+        document.getElementById(e.target.dataset.target).classList.remove('hidden');
+    });
+});
+
+// Clients Logic
+async function fetchClients() {
+    try {
+        const [rClients, rUsage] = await Promise.all([
+            fetch('/api/admin/clients'),
+            fetch('/api/admin/clients_usage')
+        ]);
+        const data = await rClients.json();
+        clientsData = data.clients || {};
+        const usageData = await rUsage.json() || {};
+        
+        renderClientsTable(clientsData, usageData);
+    } catch(e) {
+        console.error("Failed to load clients", e);
+    }
+}
+
+function renderClientsTable(clients, usage) {
+    const tbody = document.getElementById('clients-tbody');
+    let html = '';
+    for (const [ip, cfg] of Object.entries(clients)) {
+        const used = usage[ip] || 0;
+        const limitStr = cfg.limit === -1 ? 'Limitless' : fmt(cfg.limit);
+        const modelsStr = Array.isArray(cfg.models) ? cfg.models.join(', ') : cfg.models;
+        const frontierBadge = cfg.frontier_allowed ? '<span class="badge-ok text-xs ml-2">Frontier</span>' : '';
+        const statusHTML = cfg.blocked ? '<span class="badge-gaming">Blocked</span>' : '<span class="badge-ok">Active</span>';
+        
+        html += `<tr>
+            <td class="font-bold">${escHtml(ip)}${frontierBadge}</td>
+            <td>${fmt(used)}</td>
+            <td>${limitStr}</td>
+            <td><div class="truncate max-w-[200px]" title="${escHtml(modelsStr)}">${escHtml(modelsStr)}</div></td>
+            <td>${statusHTML}</td>
+            <td>
+                <button onclick="openClientModal('${ip}')" class="text-[#89b4fa] hover:underline mr-2">Edit</button>
+                <button onclick="deleteClient('${ip}')" class="text-[#f38ba8] hover:underline">Delete</button>
+            </td>
+        </tr>`;
+    }
+    tbody.innerHTML = html || '<tr><td colspan="6" class="text-center py-4">No clients configured</td></tr>';
+}
+
+function openClientModal(ip = '') {
+    const modal = document.getElementById('client-modal');
+    document.getElementById('client-modal-title').innerText = ip ? 'Edit Client' : 'Add Client';
+    
+    renderModelCheckboxes();
+    renderFrontierCheckboxes();
+    
+    if (ip && clientsData[ip]) {
+        document.getElementById('client-ip').value = ip;
+        document.getElementById('client-ip').disabled = true; // prevent changing IP when editing
+        document.getElementById('client-limit').value = clientsData[ip].limit;
+        
+        const models = clientsData[ip].models;
+        const modelsStr = Array.isArray(models) ? models.join(', ') : models;
+        document.getElementById('client-models-text').value = modelsStr;
+        
+        if (modelsStr === '*') {
+            document.getElementById('client-models-all').checked = true;
+            toggleModelSelection(true, true);
+        } else {
+            document.getElementById('client-models-all').checked = false;
+            toggleModelSelection(false, true);
+            const modelArr = Array.isArray(models) ? models : [models];
+            document.querySelectorAll('.model-cb').forEach(cb => {
+                cb.checked = modelArr.includes(cb.value);
+            });
+        }
+        
+        const fAllowed = clientsData[ip].frontier_allowed || false;
+        document.getElementById('client-frontier').checked = fAllowed;
+        toggleFrontierSection(fAllowed);
+        
+        const fModels = clientsData[ip].frontier_models || '*';
+        const fModelsStr = Array.isArray(fModels) ? fModels.join(', ') : fModels;
+        document.getElementById('client-frontier-text').value = fModelsStr;
+        
+        if (fModelsStr === '*') {
+            document.getElementById('client-frontier-all').checked = true;
+            toggleFrontierSelection(true, true);
+        } else {
+            document.getElementById('client-frontier-all').checked = false;
+            toggleFrontierSelection(false, true);
+            const fModelArr = Array.isArray(fModels) ? fModels : [fModels];
+            document.querySelectorAll('.fmodel-cb').forEach(cb => {
+                cb.checked = fModelArr.includes(cb.value);
+            });
+        }
+        
+        document.getElementById('client-blocked').checked = clientsData[ip].blocked;
+    } else {
+        document.getElementById('client-ip').value = '';
+        document.getElementById('client-ip').disabled = false;
+        document.getElementById('client-limit').value = '5000000';
+        
+        document.getElementById('client-models-text').value = '*';
+        document.getElementById('client-models-all').checked = true;
+        toggleModelSelection(true, true);
+        
+        document.getElementById('client-frontier').checked = false;
+        toggleFrontierSection(false);
+        
+        document.getElementById('client-frontier-text').value = '*';
+        document.getElementById('client-frontier-all').checked = true;
+        toggleFrontierSelection(true, true);
+        
+        document.getElementById('client-blocked').checked = false;
+    }
+    
+    modal.classList.remove('hidden');
+}
+
+function closeClientModal() {
+    document.getElementById('client-modal').classList.add('hidden');
+}
+
+async function saveClient() {
+    const ip = document.getElementById('client-ip').value.trim();
+    if(!ip) return alert("IP cannot be empty");
+    
+    const limit = parseInt(document.getElementById('client-limit').value) || -1;
+    
+    const modelsRaw = document.getElementById('client-models-text').value.trim();
+    const models = modelsRaw === '*' ? '*' : modelsRaw.split(',').map(s=>s.trim()).filter(s=>s);
+    
+    const blocked = document.getElementById('client-blocked').checked;
+    const frontierAllowed = document.getElementById('client-frontier').checked;
+    const fModelsRaw = document.getElementById('client-frontier-text').value.trim();
+    const frontierModels = fModelsRaw === '*' ? '*' : fModelsRaw.split(',').map(s=>s.trim()).filter(s=>s);
+    
+    clientsData[ip] = { limit, models, blocked, frontier_allowed: frontierAllowed, frontier_models: frontierModels };
+    
+    try {
+        const res = await fetch('/api/admin/clients', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({clients: clientsData})
+        });
+        if(res.ok) {
+            closeClientModal();
+            fetchClients();
+        } else alert("Failed to save client");
+    } catch(e) {
+        alert("Error saving client");
+    }
+}
+
+async function deleteClient(ip) {
+    if(!confirm(`Delete client ${ip}?`)) return;
+    delete clientsData[ip];
+    try {
+        const res = await fetch('/api/admin/clients', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({clients: clientsData})
+        });
+        if(res.ok) fetchClients();
+    } catch(e) {}
+}
+
+// Models
+async function fetchModels() {
+    try {
+        const r = await fetch('/api/admin/models');
+        const data = await r.json();
+        localModels = data.local_models || [];
+        frontierModels = data.frontier_models || [];
+    } catch(e) {}
+}
+
+function renderModelCheckboxes() {
+    const container = document.getElementById('client-models-container');
+    let html = '';
+    localModels.forEach(m => {
+        html += `<label class="inline-flex items-center text-[#cdd6f4] hover:text-white cursor-pointer truncate" title="${escHtml(m)}">
+            <input type="checkbox" class="model-cb form-checkbox text-[#89b4fa] mr-2" value="${escHtml(m)}" onchange="syncCheckboxesToText()">
+            <span class="truncate">${escHtml(m)}</span>
+        </label>`;
+    });
+    container.innerHTML = html || '<div class="text-[#7f849c] col-span-2">No local models found</div>';
+}
+
+function renderFrontierCheckboxes() {
+    const container = document.getElementById('client-frontier-container');
+    let html = '';
+    frontierModels.forEach(m => {
+        html += `<label class="inline-flex items-center text-[#cdd6f4] hover:text-white cursor-pointer truncate" title="${escHtml(m)}">
+            <input type="checkbox" class="fmodel-cb form-checkbox text-[#89b4fa] mr-2" value="${escHtml(m)}" onchange="syncFrontierCheckboxesToText()">
+            <span class="truncate">${escHtml(m)}</span>
+        </label>`;
+    });
+    container.innerHTML = html || '<div class="text-[#7f849c] col-span-2">No frontier models found</div>';
+}
+
+function syncCheckboxesToText() {
+    const selected = Array.from(document.querySelectorAll('.model-cb:checked')).map(cb => cb.value);
+    document.getElementById('client-models-text').value = selected.join(', ');
+}
+
+function syncModelsToText() {
+    const raw = document.getElementById('client-models-text').value.trim();
+    if (raw === '*') {
+        document.getElementById('client-models-all').checked = true;
+        toggleModelSelection(true, true);
+    } else {
+        document.getElementById('client-models-all').checked = false;
+        toggleModelSelection(false, true);
+        const modelArr = raw.split(',').map(s=>s.trim()).filter(s=>s);
+        document.querySelectorAll('.model-cb').forEach(cb => {
+            cb.checked = modelArr.includes(cb.value);
+        });
+    }
+}
+
+function toggleModelSelection(isAll, skipSync = false) {
+    document.querySelectorAll('.model-cb').forEach(cb => {
+        cb.disabled = isAll;
+        if(isAll) cb.checked = true;
+    });
+    const container = document.getElementById('client-models-container');
+    if (isAll) {
+        container.style.opacity = '0.5';
+        container.style.pointerEvents = 'none';
+        if (!skipSync) document.getElementById('client-models-text').value = '*';
+    } else {
+        container.style.opacity = '1';
+        container.style.pointerEvents = 'auto';
+        if (!skipSync) syncCheckboxesToText();
+    }
+}
+
+function toggleFrontierSection(enabled) {
+    const section = document.getElementById('frontier-models-section');
+    if (enabled) {
+        section.classList.remove('hidden');
+    } else {
+        section.classList.add('hidden');
+    }
+}
+
+function syncFrontierCheckboxesToText() {
+    const selected = Array.from(document.querySelectorAll('.fmodel-cb:checked')).map(cb => cb.value);
+    document.getElementById('client-frontier-text').value = selected.join(', ');
+}
+
+function syncFrontierModelsToText() {
+    const raw = document.getElementById('client-frontier-text').value.trim();
+    if (raw === '*') {
+        document.getElementById('client-frontier-all').checked = true;
+        toggleFrontierSelection(true, true);
+    } else {
+        document.getElementById('client-frontier-all').checked = false;
+        toggleFrontierSelection(false, true);
+        const modelArr = raw.split(',').map(s=>s.trim()).filter(s=>s);
+        document.querySelectorAll('.fmodel-cb').forEach(cb => {
+            cb.checked = modelArr.includes(cb.value);
+        });
+    }
+}
+
+function toggleFrontierSelection(isAll, skipSync = false) {
+    document.querySelectorAll('.fmodel-cb').forEach(cb => {
+        cb.disabled = isAll;
+        if(isAll) cb.checked = true;
+    });
+    const container = document.getElementById('client-frontier-container');
+    if (isAll) {
+        container.style.opacity = '0.5';
+        container.style.pointerEvents = 'none';
+        if (!skipSync) document.getElementById('client-frontier-text').value = '*';
+    } else {
+        container.style.opacity = '1';
+        container.style.pointerEvents = 'auto';
+        if (!skipSync) syncFrontierCheckboxesToText();
+    }
+}
+
+// Frontier Logic
+async function fetchFrontier() {
+    try {
+        const r = await fetch('/api/admin/frontier');
+        frontierData = await r.json();
+        if(!frontierData.providers) frontierData.providers = {};
+        
+        document.getElementById('frontier-enable').checked = frontierData.enabled || false;
+        renderFrontierProviders();
+    } catch(e) {
+        console.error("Failed to load frontier config", e);
+    }
+}
+
+function renderFrontierProviders() {
+    const container = document.getElementById('frontier-providers-container');
+    let html = '';
+    
+    for (const [providerKey, config] of Object.entries(frontierData.providers)) {
+        const modelsStr = (config.models || []).join(', ');
+        html += `
+        <div class="card provider-card" data-key="${providerKey}">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="font-bold text-[#b4befe] capitalize">${escHtml(providerKey)}</h3>
+                <button onclick="removeFrontierProvider('${providerKey}')" class="text-[#f38ba8] text-sm hover:underline">Remove</button>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label class="block text-xs text-[#7f849c] mb-1">Base URL (OpenAI Compatible)</label>
+                    <input type="text" class="prov-base w-full bg-[#11111b] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4]" value="${escHtml(config.base_url || '')}" placeholder="https://api.openai.com/v1">
+                </div>
+                <div>
+                    <label class="block text-xs text-[#7f849c] mb-1">API Key</label>
+                    <input type="password" class="prov-key w-full bg-[#11111b] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4]" value="${escHtml(config.api_key || '')}" placeholder="sk-...">
+                </div>
+            </div>
+            <div>
+                <label class="block text-xs text-[#7f849c] mb-1">Served Models (comma separated)</label>
+                <input type="text" class="prov-models w-full bg-[#11111b] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4]" value="${escHtml(modelsStr)}" placeholder="gpt-4o, gpt-3.5-turbo">
+            </div>
+        </div>`;
+    }
+    
+    container.innerHTML = html;
+}
+
+function addFrontierProvider() {
+    const key = prompt("Enter provider ID (e.g. 'openai', 'groq', 'together'):");
+    if(!key) return;
+    if(frontierData.providers[key]) return alert("Provider already exists");
+    
+    frontierData.providers[key] = { base_url: "", api_key: "", models: [] };
+    renderFrontierProviders();
+}
+
+function removeFrontierProvider(key) {
+    if(!confirm(`Remove provider ${key}?`)) return;
+    delete frontierData.providers[key];
+    renderFrontierProviders();
+}
+
+function toggleFrontierMaster(enabled) {
+    frontierData.enabled = enabled;
+}
+
+async function saveFrontierConfig() {
+    frontierData.enabled = document.getElementById('frontier-enable').checked;
+    
+    document.querySelectorAll('.provider-card').forEach(card => {
+        const key = card.dataset.key;
+        const baseUrl = card.querySelector('.prov-base').value.trim();
+        const apiKey = card.querySelector('.prov-key').value.trim();
+        const modelsRaw = card.querySelector('.prov-models').value.trim();
+        const models = modelsRaw ? modelsRaw.split(',').map(s=>s.trim()).filter(s=>s) : [];
+        
+        frontierData.providers[key] = { base_url: baseUrl, api_key: apiKey, models: models };
+    });
+    
+    try {
+        const res = await fetch('/api/admin/frontier', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(frontierData)
+        });
+        if(res.ok) {
+            alert("Frontier config saved!");
+            fetchModels();
+        } else {
+            alert("Failed to save frontier config");
+        }
+    } catch(e) {
+        alert("Error saving frontier config");
+    }
+}
+
+// Logging Logic
+async function fetchLoggingConfig() {
+    try {
+        const r = await fetch('/api/logging');
+        const data = await r.json();
+        document.getElementById('logging-enable').checked = data.enabled !== false;
+    } catch(e) {
+        console.error("Failed to load logging config", e);
+    }
+}
+
+async function toggleLogging(enabled) {
+    try {
+        const res = await fetch('/api/logging', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: enabled})
+        });
+        if (!res.ok) alert("Failed to save logging config");
+    } catch(e) {
+        alert("Error saving logging config");
+        document.getElementById('logging-enable').checked = !enabled; // revert
+    }
+}
+
+// Initialize
+initAdmin();
+</script>
+{% endblock %}

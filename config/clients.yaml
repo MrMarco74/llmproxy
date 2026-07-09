@@ -1,0 +1,5 @@
+clients:
+  default:
+    blocked: false
+    limit: 10000000
+    models: '*'

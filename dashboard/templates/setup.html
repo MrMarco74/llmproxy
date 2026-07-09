@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+{% block title %}LLM Monitor — Setup & Überblick{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto space-y-6">
+
+  <div>
+    <h1 class="text-2xl font-bold text-[#b4befe] mb-1">LLM Monitor & llmproxy — Überblick</h1>
+    <p class="text-[#7f849c] text-sm">Alles was du wissen musst: Architektur, Monitor-App, Installation.</p>
+  </div>
+
+  <!-- ── Architektur ─────────────────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="text-sm font-semibold text-[#cdd6f4] mb-3">🏗 Wie das zusammenhängt</div>
+    <div class="rounded p-3 text-xs font-mono leading-relaxed mb-3 overflow-x-auto whitespace-pre" style="background:#181825;color:#cdd6f4;line-height:1.6">Dein Rechner / Roo Cline / Open WebUI
+         |
+         |  :11435  &lt;-- immer dieser Port, nie :11434 direkt!
+         v
+  +--------------------------------------------+
+  |  llmproxy  (<proxy-host>, systemd)                 |
+  |  - Logging aller Anfragen (SQLite)         |
+  |  - Gaming-Mode-Sperre                      |
+  |  - Inference-Budget pro Client             |
+  |  - Idle Model Eviction                     |
+  |  - /status/stream  (SSE live feed)         |
+  +--------------------------------------------+
+         |
+         |  :11434  (intern)
+         v
+    Ollama  (lokal auf <gpu-host>)</div>
+    <div class="rounded p-3 text-sm space-y-1" style="background:#181825">
+      <div class="flex gap-2 items-start">
+        <span class="text-[#f38ba8] shrink-0">✗</span>
+        <span class="text-[#7f849c]"><code class="text-[#f38ba8]">http://&lt;gpu-host&gt;:11434</code> — direkt zu Ollama, <strong class="text-[#f38ba8]">nicht verwenden</strong> — kein Logging, keine Sperre, kein Budget</span>
+      </div>
+      <div class="flex gap-2 items-start">
+        <span class="text-[#a6e3a1] shrink-0">✓</span>
+        <span class="text-[#7f849c]"><code class="text-[#a6e3a1]">http://&lt;proxy-host&gt;:11435</code> — llmproxy, <strong class="text-[#a6e3a1]">immer dieser Port</strong></span>
+      </div>
+    </div>
+    <p class="text-xs text-[#585b70] mt-2">
+      Der Proxy leitet die Anfrage intern an Ollama weiter — für deine Clients ist er vollständig transparent.
+      Alle Ollama-kompatiblen Tools (Roo Cline, Open WebUI, llmbenchy, …) funktionieren ohne Anpassung,
+      du änderst nur die URL von <code>:11434</code> auf <code>:11435</code>.
+    </p>
+  </div>
+
+  <!-- ── Autostart <proxy-host> ─────────────────────────────────────────────────────── -->
+  <div class="card" style="border-color:#a6e3a133">
+    <div class="text-sm font-semibold text-[#a6e3a1] mb-2">⚡ &lt;proxy-host&gt; fährt automatisch hoch</div>
+    <p class="text-sm text-[#7f849c] mb-3">
+      llmproxy läuft auf &lt;proxy-host&gt; als <strong class="text-[#cdd6f4]">systemd-Service</strong>
+      und startet automatisch mit dem System — du musst nichts manuell starten.
+    </p>
+    <div class="grid grid-cols-2 gap-3 text-xs">
+      <div class="rounded p-2" style="background:#181825">
+        <div class="text-[#585b70] mb-1">Status prüfen</div>
+        <code class="text-[#a6e3a1]">systemctl status llmproxy</code>
+      </div>
+      <div class="rounded p-2" style="background:#181825">
+        <div class="text-[#585b70] mb-1">Logs ansehen</div>
+        <code class="text-[#a6e3a1]">journalctl -u llmproxy -f</code>
+      </div>
+      <div class="rounded p-2" style="background:#181825">
+        <div class="text-[#585b70] mb-1">Neu starten</div>
+        <code class="text-[#a6e3a1]">systemctl restart llmproxy</code>
+      </div>
+      <div class="rounded p-2" style="background:#181825">
+        <div class="text-[#585b70] mb-1">Health-Check</div>
+        <code class="text-[#a6e3a1]">curl &lt;proxy-host&gt;:11435/health</code>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Was der LLM Monitor zeigt ─────────────────────────────────────────── -->
+  <div class="card">
+    <div class="text-sm font-semibold text-[#cdd6f4] mb-4">🖥 Was der LLM Monitor zeigt & kann</div>
+    <div class="grid grid-cols-1 gap-3 text-sm">
+
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">🎮</span>
+        <div>
+          <div class="font-medium text-[#cdd6f4]">Gaming-Mode-Anzeige</div>
+          <div class="text-[#7f849c] text-xs mt-0.5">Sobald Steam auf dem &lt;gpu-host&gt; läuft, sperrt llmproxy alle LLM-Anfragen und der Monitor zeigt einen roten „GAMING MODE"-Banner. Anfragen liefern dann HTTP 503.</div>
+        </div>
+      </div>
+
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">🖥️</span>
+        <div>
+          <div class="font-medium text-[#cdd6f4]">Hardware-Live-Stats</div>
+          <div class="text-[#7f849c] text-xs mt-0.5">CPU-Auslastung, RAM-Nutzung, sowie pro GPU: Auslastung in %, VRAM belegt/gesamt als Balken, Temperatur in °C — alles live via SSE, kein SSH nötig.</div>
+        </div>
+      </div>
+
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">🤖</span>
+        <div>
+          <div class="font-medium text-[#cdd6f4]">Geladene Modelle</div>
+          <div class="text-[#7f849c] text-xs mt-0.5">Welche Modelle gerade im VRAM liegen, mit Größe und Context-Länge. Farbkodierung nach VRAM-Anteil (grün → gelb → rot).</div>
+        </div>
+      </div>
+
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">📊</span>
+        <div>
+          <div class="font-medium text-[#cdd6f4]">Token-Statistiken (Session)</div>
+          <div class="text-[#7f849c] text-xs mt-0.5">Tokens In/Out seit Programmstart, aktuelle tokens/s (In und Out getrennt), Peak-tps. Wird aus dem Live-Feed akkumuliert.</div>
+        </div>
+      </div>
+
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">🔔</span>
+        <div>
+          <div class="font-medium text-[#cdd6f4]">Benachrichtigungen (Tray-Toast)</div>
+          <div class="text-[#7f849c] text-xs mt-0.5">Neue Notifications aus dem llmproxy (Gaming-Mode, Budget-Warnung, TPS-Anomalie, Eviction …) erscheinen als Desktop-Toast. Das Tray-Icon zeigt einen Badge bei ungelesenen Meldungen.</div>
+        </div>
+      </div>
+
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">🔗</span>
+        <div>
+          <div class="font-medium text-[#cdd6f4]">Verbindungsstatus & Reconnect</div>
+          <div class="text-[#7f849c] text-xs mt-0.5">Zeigt ob der SSE-Stream aktiv ist. Bei Verbindungsabbruch reconnected die App automatisch alle 3 Sekunden.</div>
+        </div>
+      </div>
+
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">📥</span>
+        <div>
+          <div class="font-medium text-[#cdd6f4]">Minimize-to-Tray</div>
+          <div class="text-[#7f849c] text-xs mt-0.5">Fenster schließen versteckt den Monitor im Tray — läuft weiter im Hintergrund. Tray-Icon: Klick = Fenster öffnen, Rechtsklick = Menü mit „Anzeigen" und „Beenden".</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── Download ───────────────────────────────────────────────────────────── -->
+  <div class="card flex items-center justify-between gap-4">
+    <div>
+      <div class="font-semibold text-[#cdd6f4] mb-1">📦 llm-monitor-setup.tar.gz</div>
+      <div class="text-sm text-[#7f849c]">
+        Enthält: <code class="text-[#89b4fa]">llm_monitor.py</code>,
+        <code class="text-[#89b4fa]">install_monitor.sh</code>,
+        <code class="text-[#89b4fa]">uninstall_monitor.sh</code>,
+        <code class="text-[#89b4fa]">llm_monitor.desktop</code>, Icon
+      </div>
+    </div>
+    {% if archive_exists %}
+    <a href="/static/llm-monitor-setup.tar.gz"
+       class="shrink-0 px-5 py-2 rounded-lg font-semibold text-sm"
+       style="background:#89b4fa;color:#1e1e2e">
+      ⬇ Download
+    </a>
+    {% else %}
+    <span class="shrink-0 text-sm text-[#f38ba8]">Archiv nicht gefunden — Image neu bauen.</span>
+    {% endif %}
+  </div>
+
+  <!-- ── One-liner ──────────────────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="text-sm font-semibold text-[#cdd6f4] mb-2">⚡ One-Liner Installation</div>
+    <p class="text-xs text-[#7f849c] mb-2">Auf dem Zielrechner ausführen — lädt, entpackt und installiert automatisch:</p>
+    <div class="relative">
+      <pre id="oneliner" class="rounded p-3 text-xs overflow-x-auto" style="background:#181825;color:#a6e3a1">mkdir -p /tmp/llm-monitor && cd /tmp/llm-monitor && curl -fsSL http://{{ request.headers.get('host', '<proxy-host>:18080') }}/static/llm-monitor-setup.tar.gz | tar xz && bash install_monitor.sh --url {{ proxy_url }}</pre>
+      <button onclick="copyCmd('oneliner')" class="absolute top-2 right-2 text-xs px-2 py-1 rounded" style="background:#313244;color:#cdd6f4">Kopieren</button>
+    </div>
+  </div>
+
+  <!-- ── Manuelle Schritte ──────────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="text-sm font-semibold text-[#cdd6f4] mb-4">📋 Manuelle Installation</div>
+    <ol class="space-y-4 text-sm text-[#cdd6f4]">
+      <li class="flex gap-3">
+        <span class="shrink-0 w-6 h-6 rounded-full text-center text-xs font-bold flex items-center justify-center" style="background:#313244;color:#b4befe">1</span>
+        <div>
+          <div class="font-medium mb-1">Archiv herunterladen &amp; entpacken</div>
+          <pre class="rounded p-2 text-xs" style="background:#181825;color:#a6e3a1">mkdir -p /tmp/llm-monitor && cd /tmp/llm-monitor
+curl -fsSL http://{{ request.headers.get('host', '<proxy-host>:18080') }}/static/llm-monitor-setup.tar.gz | tar xz</pre>
+        </div>
+      </li>
+      <li class="flex gap-3">
+        <span class="shrink-0 w-6 h-6 rounded-full text-center text-xs font-bold flex items-center justify-center" style="background:#313244;color:#b4befe">2</span>
+        <div>
+          <div class="font-medium mb-1">Installer ausführen</div>
+          <pre class="rounded p-2 text-xs" style="background:#181825;color:#a6e3a1">bash install_monitor.sh --url {{ proxy_url }}</pre>
+          <p class="text-xs text-[#7f849c] mt-1">
+            <code class="text-[#f9e2af]">--url</code> muss auf den llmproxy zeigen.
+            Voreingestellt: <code class="text-[#89b4fa]">{{ proxy_url }}</code>
+          </p>
+        </div>
+      </li>
+      <li class="flex gap-3">
+        <span class="shrink-0 w-6 h-6 rounded-full text-center text-xs font-bold flex items-center justify-center" style="background:#313244;color:#b4befe">3</span>
+        <div>
+          <div class="font-medium mb-1">App starten</div>
+          <div class="text-[#7f849c]">Anwendungsmenü → <span class="text-[#cdd6f4]">LLM Monitor</span></div>
+          <div class="text-[#7f849c] mt-0.5">Terminal: <code class="text-[#a6e3a1]">llm-monitor</code></div>
+        </div>
+      </li>
+    </ol>
+  </div>
+
+  <!-- ── Config & Deinstall ─────────────────────────────────────────────────── -->
+  <div class="grid grid-cols-2 gap-4">
+    <div class="card" style="border-color:#f9e2af33">
+      <div class="text-sm font-semibold text-[#f9e2af] mb-2">⚙️ Konfiguration</div>
+      <p class="text-xs text-[#7f849c] mb-2">
+        Die URL wird beim ersten Start gespeichert in<br>
+        <code class="text-[#89b4fa]">~/.config/llmproxy/monitor.conf</code>
+      </p>
+      <code class="text-[#a6e3a1] text-xs">{{ proxy_url }}</code>
+      <p class="text-xs text-[#585b70] mt-2">Andere URL? Installer mit <code class="text-[#f9e2af]">--url http://&lt;host&gt;:11435</code> aufrufen.</p>
+    </div>
+    <div class="card" style="border-color:#f38ba833">
+      <div class="text-sm font-semibold text-[#f38ba8] mb-2">🗑 Deinstallation</div>
+      <pre class="rounded p-2 text-xs mb-2" style="background:#181825;color:#f38ba8">bash /tmp/uninstall_monitor.sh</pre>
+      <p class="text-xs text-[#7f849c]">Entfernt alle installierten Dateien, den Desktop-Eintrag und das Icon.</p>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function copyCmd(id) {
+  const el = document.getElementById(id);
+  const text = el.textContent.trim();
+  const btn = el.nextElementSibling;
+  const finish = () => { btn.textContent = '✓'; setTimeout(() => btn.textContent = 'Kopieren', 1500); };
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(finish);
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    finish();
+  }
+}
+</script>
+{% endblock %}

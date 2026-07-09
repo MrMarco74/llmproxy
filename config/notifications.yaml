@@ -1,0 +1,19 @@
+# llmproxy — Interne Notifications
+#
+# Steuert welche Ereignisse eine interne Notification erzeugen.
+# Notifications werden in der SQLite-DB gespeichert (notifications-Tabelle)
+# und über den SSE-Stream als unread_count an alle Clients übermittelt.
+#
+# Das Dashboard zeigt eine Glocke mit Ungelesen-Badge.
+# Die Desktop-App zeigt einen System-Tray-Toast.
+
+events:
+  gaming_mode_start: true    # Steam gestartet — LLM geblockt
+  gaming_mode_end:   true    # Steam beendet — LLM wieder verfügbar
+  budget_warning:    true    # 80% des Tages-Budgets erreicht
+  budget_exceeded:   true    # Budget erschöpft (429-Response)
+  tps_anomaly:       true    # tokens/s < 50% der Baseline (VRAM-Offload / Throttling)
+  thermal_warning:   true    # GPU-Temperatur >= 80°C
+  model_evicted:     true    # Modell aus VRAM entladen
+  load_shedding:     false   # GPU-Überlast → Requests verzögert
+  weekly_report:     false   # Wöchentlicher Report (noch nicht implementiert)

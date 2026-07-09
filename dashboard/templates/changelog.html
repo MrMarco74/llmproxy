@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Updates & Changelog — llmproxy{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-4 mb-6">
+  <h1 class="text-xl font-bold text-[#b4befe]">Updates & Changelog</h1>
+</div>
+
+<div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
+
+  <div class="card relative pl-10 border-l-4 border-l-[#f38ba8]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f38ba8] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#f38ba8] text-lg">v2.3.0 — Parallele GPU-Nutzung & Maintenance-Tools</h2>
+      <span class="text-sm text-[#7f849c]">29. Juni 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Round-Robin Routing:</strong> Wenn beide GPUs frei sind, verteilt der Proxy parallele Requests automatisch auf GPU 0 (RTX 3080) und GPU 1 (RTX 3060) — echte Parallelität statt sequentieller Warteschlange.</li>
+      <li><strong>Stop-All Modus:</strong> <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">POST /maintenance/stop-all</code> blockiert sofort alle Inference-Requests (HTTP 503) und killt laufende Prozesse. <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">POST /maintenance/resume</code> hebt den Modus wieder auf.</li>
+      <li><strong>Force-Purge:</strong> <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">POST /maintenance/force-purge</code> — zweistufiger Hard-Reset: erst soft evict via <code class="bg-[#313244] px-1 py-0.5 rounded">keep_alive: 0</code>, dann SIGKILL auf alle llama-server Prozesse.</li>
+      <li><strong>GPU-Status-Seite:</strong> <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">GET /status/gpu/html</code> — Live-Übersicht welches Modell auf welcher GPU läuft, welcher Client aktiv ist, VRAM/Load/Temp. Auto-Refresh alle 5s.</li>
+      <li><strong>Upstream-Tracking:</strong> Aktive Requests werden jetzt mit GPU-Index gespeichert — sichtbar in <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">GET /status/gpu</code>.</li>
+      <li><strong>Bugfix GGML_VK:</strong> <code class="bg-[#313244] px-1 py-0.5 rounded text-[#f38ba8]">GGML_VK_VISIBLE_DEVICES</code> wurde von Ollama intern gesetzt und übersteuerte <code class="bg-[#313244] px-1 py-0.5 rounded">CUDA_VISIBLE_DEVICES</code> — Fix via systemd Drop-in.</li>
+    </ul>
+  </div>
+
+  <div class="card relative pl-10 border-l-4 border-l-[#f9e2af]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f9e2af] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#f9e2af] text-lg">v2.2.0 — Admin UI & Frontier LLMs</h2>
+      <span class="text-sm text-[#7f849c]">19. Juni 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Admin UI:</strong> Clients, Limits und Block-Regeln können nun direkt über das Dashboard gesteuert werden.</li>
+      <li><strong>Frontier Proxy:</strong> Native Unterstützung für externe APIs (OpenAI-kompatibel, z. B. Gemini, OpenRouter), die direkt transparent durch llmproxy durchgeschleift werden.</li>
+      <li><strong>Model-Picker:</strong> Erlaubte Modelle pro Client lassen sich nun komfortabel per Checkbox auswählen.</li>
+      <li><strong>Open-Source Release:</strong> Das Projekt wurde bereinigt und generalisiert (Lizenzen, Docs, generische Hostnames).</li>
+    </ul>
+  </div>
+
+  <div class="card relative pl-10 border-l-4 border-l-[#a6e3a1]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#a6e3a1] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#a6e3a1] text-lg">v2.1.0 — Dual-Ollama Architektur & Smart Routing</h2>
+      <span class="text-sm text-[#7f849c]">07. Juni 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Asymmetrisches Multi-GPU:</strong> Umstellung auf 2x isolierte Ollama-Instanzen (RTX 3080 auf Port 11434, RTX 3060 auf Port 11438).</li>
+      <li><strong>GPU-Aware Routing:</strong> `routing.yaml` unterstützt jetzt <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">target_gpu</code>. Bei Auslastung von GPU 0 wird automatisch auf GPU 1 ausgewichen (Load-Shedding).</li>
+      <li><strong>Kritischer Bugfix:</strong> Idle Eviction nutzt jetzt <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">keep_alive: 0</code> statt <code class="bg-[#313244] px-1 py-0.5 rounded text-[#f38ba8]">DELETE /api/delete</code>, womit Modelle nicht mehr versehentlich von der Festplatte gelöscht werden!</li>
+      <li><strong>Dashboard:</strong> Diese neue Update/Changelog-Seite hinzugefügt.</li>
+    </ul>
+  </div>
+
+  <div class="card relative pl-10 border-l-4 border-l-[#89b4fa]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#89b4fa] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#89b4fa] text-lg">v2.0.0 — Dashboard & Monitor Release</h2>
+      <span class="text-sm text-[#7f849c]">Juni 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li>Initiale Version des FastAPI/Docker Dashboards.</li>
+      <li>Live-Tracking von Tokens, Hardware-Auslastung (über gpu-agent) und Failure-Raten.</li>
+      <li>Gaming-Mode Erkennung: Blockiert LLM Anfragen, wenn Steam läuft.</li>
+    </ul>
+  </div>
+
+  <div class="card relative pl-10 border-l-4 border-l-[#cba6f7]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#cba6f7] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#cba6f7] text-lg">v1.0.0 — Proxy Core</h2>
+      <span class="text-sm text-[#7f849c]">Mai 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li>LLM Proxy als SQLite-geloggter Man-in-the-Middle zwischen Clients und Ollama/ComfyUI.</li>
+      <li>Budgeting und Complexity-Scoring implementiert.</li>
+    </ul>
+  </div>
+
+</div>
+{% endblock %}
