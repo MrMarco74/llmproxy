@@ -301,6 +301,45 @@ async def api_admin_fallback_save(request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+@app.get("/api/admin/guardrails")
+async def api_admin_guardrails():
+    try:
+        async with httpx.AsyncClient(timeout=3.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/guardrails")
+            return r.json()
+    except Exception:
+        return {}
+
+@app.post("/api/admin/guardrails")
+async def api_admin_guardrails_save(request: Request):
+    try:
+        data = await request.json()
+        async with httpx.AsyncClient(timeout=3.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/guardrails", json=data)
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/admin/bans")
+async def api_admin_bans():
+    try:
+        async with httpx.AsyncClient(timeout=3.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/bans")
+            return r.json()
+    except Exception:
+        return {"bans": {}}
+
+@app.post("/api/admin/unban")
+async def api_admin_unban(request: Request):
+    try:
+        data = await request.json()
+        token_name = data.get("token_name", "")
+        async with httpx.AsyncClient(timeout=3.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/unban", params={"token_name": token_name})
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.get("/api/admin/actions")
 async def api_admin_actions(limit: int = 100):
     try:

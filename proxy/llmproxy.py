@@ -2281,6 +2281,14 @@ async def set_guardrails_config(request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+@app.get("/admin/bans")
+async def get_bans(request: Request):
+    _check_admin(request)
+    import time
+    now = time.time()
+    active_bans = {k: v for k, v in _fail2ban_cfg.get("bans", {}).items() if v > now}
+    return {"bans": active_bans}
+
 @app.post("/admin/unban")
 async def unban_token(request: Request, token_name: str):
     _check_admin(request)

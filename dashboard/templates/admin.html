@@ -6,6 +6,7 @@
     <button class="nav-link tab-btn active" data-target="clients-tab">👥 Clients</button>
     <button class="nav-link tab-btn" data-target="frontier-tab">🌐 Frontier LLMs</button>
     <button class="nav-link tab-btn" data-target="fallback-tab">🔀 Fallback</button>
+    <button class="nav-link tab-btn" data-target="guardrails-tab">🛡️ Safeguards</button>
     <button class="nav-link tab-btn" data-target="settings-tab">⚙️ Settings</button>
 </div>
 
@@ -93,6 +94,57 @@
         <button onclick="saveFallbackConfig()" class="bg-[#a6e3a1] text-[#1e1e2e] px-4 py-2 rounded font-bold hover:bg-[#94e2d5] transition">
             Save Fallback Config
         </button>
+    </div>
+</div>
+
+<!-- Guardrails Tab -->
+<div id="guardrails-tab" class="tab-content hidden">
+    <div class="flex justify-between items-center mb-4">
+        <div>
+            <h2 class="text-xl font-bold text-[#b4befe]">🛡️ Safeguards &amp; Guardrails</h2>
+            <p class="text-sm text-[#7f849c] mt-1">Prompt &amp; Output-Filter, DLP-Masking und automatische Fail2Ban-Sperren bei wiederholten Verstößen.</p>
+        </div>
+        <label class="flex items-center gap-3 cursor-pointer">
+            <span class="text-sm font-semibold" id="guardrails-enabled-label">Deaktiviert</span>
+            <div class="relative">
+                <input type="checkbox" id="guardrails-enabled" class="sr-only" onchange="toggleGuardrailsEnabled(this.checked)">
+                <div id="guardrails-toggle-bg" class="w-12 h-6 rounded-full transition-colors duration-200 bg-[#313244]"></div>
+                <div id="guardrails-toggle-dot" class="absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform duration-200"></div>
+            </div>
+        </label>
+    </div>
+
+    <!-- Rules -->
+    <div class="card mb-6">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="font-bold text-[#cdd6f4]">Regeln</h3>
+            <button onclick="addGuardrailRule()" class="bg-[#313244] text-[#cdd6f4] px-3 py-1.5 rounded text-sm hover:bg-[#45475a] transition">
+                + Regel hinzufügen
+            </button>
+        </div>
+        <div id="guardrail-rules-container" class="space-y-3">
+            <p class="text-sm text-[#7f849c]">Keine Regeln konfiguriert.</p>
+        </div>
+    </div>
+
+    <div class="flex justify-end mb-6">
+        <button onclick="saveGuardrails()" class="bg-[#a6e3a1] text-[#1e1e2e] px-4 py-2 rounded font-bold hover:bg-[#94e2d5] transition">
+            Guardrails speichern
+        </button>
+    </div>
+
+    <!-- Fail2Ban Active Bans -->
+    <div class="card">
+        <div class="flex justify-between items-center mb-3">
+            <div>
+                <h3 class="font-bold text-[#cdd6f4]">🚫 Aktive Sperren (Fail2Ban)</h3>
+                <p class="text-xs text-[#7f849c] mt-0.5">Clients mit &ge;10 Verstößen in 5 Min werden automatisch für 1h gesperrt.</p>
+            </div>
+            <button onclick="fetchBans()" class="text-[#89b4fa] text-sm hover:underline">Aktualisieren</button>
+        </div>
+        <div id="bans-container">
+            <p class="text-sm text-[#7f849c]">Keine aktiven Sperren.</p>
+        </div>
     </div>
 </div>
 
@@ -259,11 +311,12 @@ let frontierModels = [];
 
 async function initAdmin() {
     await fetchClients();
-    await fetchClients();
     await fetchFrontier();
     await fetchLoggingConfig();
     await fetchModels();
     await fetchFallback();
+    await fetchGuardrails();
+    await fetchBans();
     await fetchOllamaLockStatus();
     await fetchAdminActions();
 }
@@ -1089,6 +1142,161 @@ function applySelectedModels() {
     
     currentModelInput.value = selectedIds.join(', ');
     closeModelBrowser();
+}
+
+// ── Guardrails / Safeguards ───────────────────────────────────────────────
+let guardrailsData = { enabled: false, rules: [] };
+
+function toggleGuardrailsEnabled(checked) {
+    guardrailsData.enabled = checked;
+    document.getElementById('guardrails-enabled-label').innerText = checked ? 'Aktiv' : 'Deaktiviert';
+    document.getElementById('guardrails-toggle-bg').style.backgroundColor = checked ? '#a6e3a1' : '';
+    document.getElementById('guardrails-toggle-dot').style.transform = checked ? 'translateX(24px)' : '';
+}
+
+function setGuardrailsToggleUI(enabled) {
+    const cb = document.getElementById('guardrails-enabled');
+    cb.checked = enabled;
+    document.getElementById('guardrails-enabled-label').innerText = enabled ? 'Aktiv' : 'Deaktiviert';
+    document.getElementById('guardrails-toggle-bg').style.backgroundColor = enabled ? '#a6e3a1' : '';
+    document.getElementById('guardrails-toggle-dot').style.transform = enabled ? 'translateX(24px)' : '';
+}
+
+async function fetchGuardrails() {
+    try {
+        const res = await fetch('/api/admin/guardrails');
+        guardrailsData = await res.json();
+        if (!guardrailsData.rules) guardrailsData.rules = [];
+        setGuardrailsToggleUI(guardrailsData.enabled || false);
+        renderGuardrailRules();
+    } catch(e) { console.error('Failed to load guardrails', e); }
+}
+
+const TRIGGER_OPTS = [
+    { value: 'keyword',        label: 'Prompt: Keyword' },
+    { value: 'regex',          label: 'Prompt: Regex' },
+    { value: 'dlp',            label: 'Prompt: DLP (Kreditkarte, SSN …)' },
+    { value: 'output_keyword', label: 'Output: Keyword' },
+    { value: 'output_dlp',     label: 'Output: DLP' },
+];
+const ACTION_OPTS = [
+    { value: 'deny',    label: 'Deny (blocken)' },
+    { value: 'warn',    label: 'Warn (nur loggen)' },
+    { value: 'rewrite', label: 'Rewrite (DLP maskieren)' },
+];
+const MODE_OPTS = [
+    { value: 'enforce', label: 'Enforce' },
+    { value: 'monitor', label: 'Monitor (keine Aktion)' },
+];
+
+function _sel(opts, current) {
+    return opts.map(o => `<option value="${escHtml(o.value)}" ${o.value === current ? 'selected' : ''}>${escHtml(o.label)}</option>`).join('');
+}
+
+function renderGuardrailRules() {
+    const container = document.getElementById('guardrail-rules-container');
+    const rules = guardrailsData.rules || [];
+    if (!rules.length) {
+        container.innerHTML = '<p class="text-sm text-[#7f849c]">Keine Regeln konfiguriert. Klicke "+ Regel hinzufügen".</p>';
+        return;
+    }
+    container.innerHTML = rules.map((rule, i) => `
+        <div class="flex flex-wrap gap-2 items-center bg-[#11111b] border border-[#313244] rounded p-3" data-idx="${i}">
+            <select class="rule-trigger bg-[#1e1e2e] border border-[#313244] rounded px-2 py-1.5 text-sm text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'trigger', this.value)">
+                ${_sel(TRIGGER_OPTS, rule.trigger || 'keyword')}
+            </select>
+            <input type="text" class="rule-pattern flex-1 min-w-[160px] bg-[#1e1e2e] border border-[#313244] rounded px-2 py-1.5 text-sm text-[#cdd6f4] font-mono"
+                placeholder="Pattern / Keyword (leer bei DLP)"
+                value="${escHtml(rule.pattern || '')}"
+                oninput="updateGuardrailRule(${i}, 'pattern', this.value)">
+            <select class="rule-action bg-[#1e1e2e] border border-[#313244] rounded px-2 py-1.5 text-sm text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'action', this.value)">
+                ${_sel(ACTION_OPTS, rule.action || 'deny')}
+            </select>
+            <select class="rule-mode bg-[#1e1e2e] border border-[#313244] rounded px-2 py-1.5 text-sm text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'mode', this.value)">
+                ${_sel(MODE_OPTS, rule.mode || 'enforce')}
+            </select>
+            <button onclick="deleteGuardrailRule(${i})" class="text-[#f38ba8] hover:text-white text-lg leading-none px-1" title="Regel löschen">&times;</button>
+        </div>
+    `).join('');
+}
+
+function addGuardrailRule() {
+    guardrailsData.rules.push({ trigger: 'keyword', pattern: '', action: 'deny', mode: 'enforce' });
+    renderGuardrailRules();
+}
+
+function updateGuardrailRule(idx, key, value) {
+    guardrailsData.rules[idx][key] = value;
+}
+
+function deleteGuardrailRule(idx) {
+    guardrailsData.rules.splice(idx, 1);
+    renderGuardrailRules();
+}
+
+async function saveGuardrails() {
+    try {
+        const res = await fetch('/api/admin/guardrails', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(guardrailsData)
+        });
+        const data = await res.json();
+        if (data.ok) {
+            const btn = event.target;
+            btn.innerText = '✓ Gespeichert!';
+            setTimeout(() => btn.innerText = 'Guardrails speichern', 2000);
+        } else {
+            alert('Fehler beim Speichern: ' + (data.error || '?'));
+        }
+    } catch(e) { alert('Fehler: ' + e); }
+}
+
+// ── Fail2Ban Bans ─────────────────────────────────────────────────────────
+async function fetchBans() {
+    try {
+        const res = await fetch('/api/admin/bans');
+        const data = await res.json();
+        renderBans(data.bans || {});
+    } catch(e) { console.error('Failed to load bans', e); }
+}
+
+function renderBans(bans) {
+    const container = document.getElementById('bans-container');
+    const entries = Object.entries(bans);
+    if (!entries.length) {
+        container.innerHTML = '<p class="text-sm text-[#7f849c]">Keine aktiven Sperren. \ud83c\udf89</p>';
+        return;
+    }
+    container.innerHTML = `
+        <table class="w-full text-left text-sm">
+            <thead><tr class="text-[#7f849c]">
+                <th class="pb-2 pr-4">Client / Token</th>
+                <th class="pb-2 pr-4">Gesperrt bis</th>
+                <th class="pb-2">Aktion</th>
+            </tr></thead>
+            <tbody>
+                ${entries.map(([name, until]) => `<tr>
+                    <td class="py-1 pr-4 font-mono font-bold text-[#f38ba8]">${escHtml(name)}</td>
+                    <td class="py-1 pr-4 text-[#7f849c]">${new Date(until * 1000).toLocaleTimeString('de-DE')}</td>
+                    <td class="py-1"><button onclick="unbanClient('${escHtml(name)}')" class="text-[#89b4fa] hover:underline text-xs">Entsperren</button></td>
+                </tr>`).join('')}
+            </tbody>
+        </table>`;
+}
+
+async function unbanClient(tokenName) {
+    if (!confirm(`${tokenName} entsperren?`)) return;
+    try {
+        const res = await fetch('/api/admin/unban', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token_name: tokenName })
+        });
+        const data = await res.json();
+        if (data.ok) fetchBans();
+        else alert('Fehler: ' + (data.error || '?'));
+    } catch(e) {}
 }
 
 // Initialize
