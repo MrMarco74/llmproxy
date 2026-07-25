@@ -1302,9 +1302,9 @@ async def _guard_gaming(request: Request):
 
 
 def _guard_budget_sync(token_name: str, is_frontier: bool = False):
-    if _is_blocked(client_id):
+    if _is_blocked(token_name):
         raise HTTPException(status_code=403, detail={"error": "client is blocked"})
-    allowed, used, limit = _check_budget(client_id, is_frontier)
+    allowed, used, limit = _check_budget(token_name, is_frontier)
     if limit != -1 and not allowed:
         secs_until_midnight = int(
             (datetime.datetime.combine(datetime.date.today() + datetime.timedelta(days=1),
@@ -1319,7 +1319,7 @@ def _guard_budget_sync(token_name: str, is_frontier: bool = False):
 
 async def _guard_blocked(request: Request):
     token_name = _get_token_name(request)
-    if _is_blocked(client_id):
+    if _is_blocked(token_name):
         raise HTTPException(status_code=403, detail={"error": "client is blocked"})
 
 # ── Native Ollama: /api/chat and /api/generate ─────────────────────────────────
@@ -1598,7 +1598,7 @@ def _native_to_openai(data: dict, model: str, stream: bool = False,
 
 
 async def _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx_score, base_url, api_key, token_name=None):
-    client_id = client_id or client_ip
+    token_name = token_name or client_ip
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     prompt_text = _extract_last_user_message(body)[:2000]
 
@@ -1739,7 +1739,7 @@ async def proxy_openai(request: Request):
         if not _is_model_in_list(model, allowed_frontier):
             raise HTTPException(status_code=403, detail={"error": f"frontier model {model} not allowed for client {client_ip}"})
         _guard_budget_sync(token_name, is_frontier=True)
-        return await _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx_score, frontier[0], frontier[1], token_name=client_id)
+        return await _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx_score, frontier[0], frontier[1], token_name=token_name)
     else:
         allowed_local = client_cfg.get("models", "*")
         if not _is_model_in_list(model, allowed_local):
@@ -1766,7 +1766,7 @@ async def proxy_openai(request: Request):
             logger.warning(f"[ollama-lock] lokaler Zugriff gesperrt → {model} auf Frontier {fb_model} umgeleitet")
             _guard_budget_sync(token_name, is_frontier=True)
             body["model"] = fb_model
-            return await _proxy_frontier_openai(request, body, fb_model, stream, client_ip, ua, cx_score, fb_base_url, fb_api_key, token_name=client_id)
+            return await _proxy_frontier_openai(request, body, fb_model, stream, client_ip, ua, cx_score, fb_base_url, fb_api_key, token_name=token_name)
         raise HTTPException(
             status_code=503,
             detail={"error": "local Ollama access is disabled (ollama_locked)", "ollama_locked": True, "retry_after": 60},
@@ -1783,7 +1783,7 @@ async def proxy_openai(request: Request):
             logger.warning(f"[fallback] Ollama-Upstream {upstream_idx} down (health-check) → {model} auf Frontier {fb_model} umgeleitet")
             _guard_budget_sync(token_name, is_frontier=True)
             body["model"] = fb_model
-            return await _proxy_frontier_openai(request, body, fb_model, stream, client_ip, ua, cx_score, fb_base_url, fb_api_key, token_name=client_id)
+            return await _proxy_frontier_openai(request, body, fb_model, stream, client_ip, ua, cx_score, fb_base_url, fb_api_key, token_name=token_name)
 
     native_body   = _openai_to_native_chat(body)
     num_messages  = len(native_body.get("messages", []))
@@ -1837,7 +1837,7 @@ async def proxy_openai(request: Request):
                     logger.warning(f"[fallback] Ollama-Upstream {upstream_idx} nicht erreichbar ({e}) → {model} auf Frontier {fb_model} umgeleitet")
                     _guard_budget_sync(token_name, is_frontier=True)
                     body["model"] = fb_model
-                    return await _proxy_frontier_openai(request, body, fb_model, stream, client_ip, ua, cx_score, fb_base_url, fb_api_key, token_name=client_id)
+                    return await _proxy_frontier_openai(request, body, fb_model, stream, client_ip, ua, cx_score, fb_base_url, fb_api_key, token_name=token_name)
                 _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint="/v1/chat/completions",
                                 status_code=500, failure_reason="upstream_error",
                                 last_user_message=_extract_last_user_message(body))
