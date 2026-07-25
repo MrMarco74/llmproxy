@@ -144,12 +144,12 @@ async function fetchClients() {
     const res = await fetch('/api/admin/clients');
     if (res.ok) {
       const data = await res.json();
-      clientsList = data.clients || [];
+      clientsList = Object.entries(data.clients || {}).map(([name, c]) => ({ name, ...c }));
       const sel = document.getElementById('filter_token');
       clientsList.forEach(c => {
         if(c.token) {
            const opt = document.createElement('option');
-           opt.value = c.token;
+           opt.value = c.name;
            opt.textContent = `${c.name} (${c.token})`;
            sel.appendChild(opt);
         }
