@@ -428,7 +428,7 @@ def _db_init():
         CREATE INDEX IF NOT EXISTS idx_admin_actions_ts ON admin_actions(ts);
         CREATE INDEX IF NOT EXISTS idx_guardrail_events_ts ON guardrail_events(ts);
     """)
-    for col_def in ["hostname TEXT", "prompt_text TEXT", "response_text TEXT", "is_frontier INTEGER DEFAULT 0"]:
+    for col_def in ["hostname TEXT", "prompt_text TEXT", "response_text TEXT", "is_frontier INTEGER DEFAULT 0", "token_name TEXT"]:
         try:
             con.execute(f"ALTER TABLE requests ADD COLUMN {col_def}")
         except Exception:
