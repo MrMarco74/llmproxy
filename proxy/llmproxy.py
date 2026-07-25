@@ -419,14 +419,6 @@ def _db_init():
             rule_pattern TEXT,
             snippet     TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_date     ON requests(date);
-        CREATE INDEX IF NOT EXISTS idx_model    ON requests(model);
-        CREATE INDEX IF NOT EXISTS idx_token    ON requests(token_name);
-        CREATE INDEX IF NOT EXISTS idx_ip       ON requests(client_ip);
-        CREATE INDEX IF NOT EXISTS idx_ts       ON requests(ts);
-        CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(ts);
-        CREATE INDEX IF NOT EXISTS idx_admin_actions_ts ON admin_actions(ts);
-        CREATE INDEX IF NOT EXISTS idx_guardrail_events_ts ON guardrail_events(ts);
     """)
     for col_def in ["hostname TEXT", "prompt_text TEXT", "response_text TEXT", "is_frontier INTEGER DEFAULT 0", "token_name TEXT"]:
         try:
@@ -445,13 +437,23 @@ def _db_init():
             con.execute(f"ALTER TABLE {table} RENAME COLUMN client_ip TO token_name")
         except Exception:
             pass
-            
     # Add token_name to tables that track both IP and identity
     for table in ["requests", "failures", "admin_actions"]:
         try:
             con.execute(f"ALTER TABLE {table} ADD COLUMN token_name TEXT")
         except Exception:
             pass
+            
+    con.executescript("""
+        CREATE INDEX IF NOT EXISTS idx_date     ON requests(date);
+        CREATE INDEX IF NOT EXISTS idx_model    ON requests(model);
+        CREATE INDEX IF NOT EXISTS idx_token    ON requests(token_name);
+        CREATE INDEX IF NOT EXISTS idx_ip       ON requests(client_ip);
+        CREATE INDEX IF NOT EXISTS idx_ts       ON requests(ts);
+        CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(ts);
+        CREATE INDEX IF NOT EXISTS idx_admin_actions_ts ON admin_actions(ts);
+        CREATE INDEX IF NOT EXISTS idx_guardrail_events_ts ON guardrail_events(ts);
+    """)
 
     # Add new metadata columns for full feature readiness
     for col_def in ["project TEXT", "org_group TEXT", "user TEXT"]:
