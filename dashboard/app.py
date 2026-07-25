@@ -320,6 +320,26 @@ async def api_admin_guardrails_save(request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+@app.post("/api/admin/guardrails/simulate")
+async def api_admin_guardrails_simulate(request: Request):
+    try:
+        data = await request.json()
+        async with httpx.AsyncClient(timeout=10.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/guardrails/simulate", json=data)
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/admin/guardrails/simulate-batch")
+async def api_admin_guardrails_simulate_batch(request: Request):
+    try:
+        data = await request.json()
+        async with httpx.AsyncClient(timeout=30.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/guardrails/simulate-batch", json=data)
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.get("/api/admin/bans")
 async def api_admin_bans():
     try:
@@ -398,24 +418,17 @@ async def api_admin_clients_usage():
 # ── Request Log View ─────────────────────────────────────────────────────────
 
 @app.get("/log", response_class=HTMLResponse)
-async def log_view(request: Request, page: int = 1, limit: int = 50):
-    offset = (page - 1) * limit
-    rows = _query("""
-        SELECT id, date, ts, client_ip, hostname, model, total_tokens,
-               duration_s, status_code, prompt_text, response_text
-        FROM requests
-        ORDER BY id DESC
-        LIMIT ? OFFSET ?
-    """, [limit, offset])
-    total_row = _query("SELECT COUNT(*) as n FROM requests")
-    total = total_row[0].get("n", 0) if total_row else 0
-    return templates.TemplateResponse("log.html", {
-        "request": request,
-        "rows":    rows,
-        "page":    page,
-        "limit":   limit,
-        "total":   total,
-    })
+async def log_view(request: Request):
+    return templates.TemplateResponse("log.html", {"request": request})
+
+@app.get("/api/log")
+async def api_log_view(request: Request):
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/log", params=request.query_params)
+            return r.json()
+    except Exception as e:
+        return {"total": 0, "rows": [], "error": str(e)}
 
 
 

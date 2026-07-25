@@ -114,23 +114,53 @@
         </label>
     </div>
 
-    <!-- Rules -->
-    <div class="card mb-6">
-        <div class="flex justify-between items-center mb-4">
-            <h3 class="font-bold text-[#cdd6f4]">Regeln</h3>
-            <button onclick="addGuardrailRule()" class="bg-[#313244] text-[#cdd6f4] px-3 py-1.5 rounded text-sm hover:bg-[#45475a] transition">
-                + Regel hinzufügen
-            </button>
+    <!-- Rules & Simulate -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <!-- Left: Rule Editor -->
+        <div class="card">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-bold text-[#cdd6f4]">Regeln konfigurieren</h3>
+                <select id="gr_token_selector" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4]" onchange="renderGuardrailRules()">
+                    <option value="global">Global (Alle Clients)</option>
+                    <!-- other tokens loaded via JS -->
+                </select>
+            </div>
+            <div id="guardrail-rules-container" class="space-y-3 mb-4 max-h-[400px] overflow-y-auto pr-2">
+                <p class="text-sm text-[#7f849c]">Lade Regeln...</p>
+            </div>
+            <div class="flex justify-between items-center pt-3 border-t border-[#313244]">
+                <button onclick="addGuardrailRule()" class="bg-[#313244] text-[#cdd6f4] px-3 py-1.5 rounded text-sm hover:bg-[#45475a] transition">
+                    + Regel hinzufügen
+                </button>
+                <button onclick="saveGuardrails(event)" class="bg-[#a6e3a1] text-[#1e1e2e] px-4 py-2 rounded font-bold hover:bg-[#94e2d5] transition text-sm">
+                    Speichern
+                </button>
+            </div>
         </div>
-        <div id="guardrail-rules-container" class="space-y-3">
-            <p class="text-sm text-[#7f849c]">Keine Regeln konfiguriert.</p>
+        
+        <!-- Right: Simulator -->
+        <div class="card flex flex-col">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-bold text-[#fab387]">🧪 Simulate</h3>
+                <span class="text-xs text-[#7f849c]">Testen ohne Speichern</span>
+            </div>
+            <div class="flex-1 flex flex-col gap-3">
+                <textarea id="sim_prompt" class="w-full h-32 bg-[#181825] border border-[#313244] rounded p-3 text-sm text-[#cdd6f4] focus:outline-none focus:border-[#89b4fa] font-mono" placeholder="Zu testender Prompt hier eingeben..."></textarea>
+                
+                <div class="flex gap-3">
+                    <select id="sim_token" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4] flex-1">
+                        <option value="">(Default / Global)</option>
+                    </select>
+                    <button onclick="runSimulate()" class="bg-[#89b4fa] text-[#1e1e2e] px-4 py-1 rounded font-bold hover:bg-[#b4befe] transition text-sm whitespace-nowrap">
+                        Run Test
+                    </button>
+                </div>
+                
+                <div id="sim_result" class="mt-2 p-3 rounded bg-[#11111b] border border-[#313244] text-sm text-[#7f849c] min-h-[80px]">
+                    Warte auf Eingabe...
+                </div>
+            </div>
         </div>
-    </div>
-
-    <div class="flex justify-end mb-6">
-        <button onclick="saveGuardrails()" class="bg-[#a6e3a1] text-[#1e1e2e] px-4 py-2 rounded font-bold hover:bg-[#94e2d5] transition">
-            Guardrails speichern
-        </button>
     </div>
 
     <!-- Fail2Ban Active Bans -->
@@ -1145,7 +1175,7 @@ function applySelectedModels() {
 }
 
 // ── Guardrails / Safeguards ───────────────────────────────────────────────
-let guardrailsData = { enabled: false, rules: [] };
+let guardrailsData = { enabled: false, global_rules: [], client_rules: {} };
 
 function toggleGuardrailsEnabled(checked) {
     guardrailsData.enabled = checked;
@@ -1162,12 +1192,29 @@ function setGuardrailsToggleUI(enabled) {
     document.getElementById('guardrails-toggle-dot').style.transform = enabled ? 'translateX(24px)' : '';
 }
 
+function populateTokenSelectors() {
+    const grSel = document.getElementById('gr_token_selector');
+    const simSel = document.getElementById('sim_token');
+    // keep global option
+    grSel.innerHTML = '<option value="global">Global (Alle Clients)</option>';
+    simSel.innerHTML = '<option value="">(Default / Global)</option>';
+    clients.forEach(c => {
+        if (c.token) {
+            grSel.innerHTML += `<option value="${c.token}">${c.name} (${c.token})</option>`;
+            simSel.innerHTML += `<option value="${c.token}">${c.name} (${c.token})</option>`;
+        }
+    });
+}
+
 async function fetchGuardrails() {
     try {
         const res = await fetch('/api/admin/guardrails');
         guardrailsData = await res.json();
-        if (!guardrailsData.rules) guardrailsData.rules = [];
+        if (!guardrailsData.global_rules) guardrailsData.global_rules = [];
+        if (!guardrailsData.client_rules) guardrailsData.client_rules = {};
+        
         setGuardrailsToggleUI(guardrailsData.enabled || false);
+        populateTokenSelectors();
         renderGuardrailRules();
     } catch(e) { console.error('Failed to load guardrails', e); }
 }
@@ -1181,38 +1228,53 @@ const TRIGGER_OPTS = [
 ];
 const ACTION_OPTS = [
     { value: 'deny',    label: 'Deny (blocken)' },
+    { value: 'silent',  label: 'Silent (blockieren als 200 OK)' },
     { value: 'warn',    label: 'Warn (nur loggen)' },
     { value: 'rewrite', label: 'Rewrite (DLP maskieren)' },
+    { value: 'redirect',label: 'Redirect (zu lokalem Fallback)' }
 ];
 const MODE_OPTS = [
     { value: 'enforce', label: 'Enforce' },
     { value: 'monitor', label: 'Monitor (keine Aktion)' },
+    { value: 'shadow',  label: 'Shadow (nur in Splunk loggen)' }
 ];
 
 function _sel(opts, current) {
     return opts.map(o => `<option value="${escHtml(o.value)}" ${o.value === current ? 'selected' : ''}>${escHtml(o.label)}</option>`).join('');
 }
 
+function _getCurrentRuleList() {
+    const sel = document.getElementById('gr_token_selector').value;
+    if (sel === 'global') {
+        if (!guardrailsData.global_rules) guardrailsData.global_rules = [];
+        return guardrailsData.global_rules;
+    } else {
+        if (!guardrailsData.client_rules) guardrailsData.client_rules = {};
+        if (!guardrailsData.client_rules[sel]) guardrailsData.client_rules[sel] = {rules: []};
+        return guardrailsData.client_rules[sel].rules;
+    }
+}
+
 function renderGuardrailRules() {
     const container = document.getElementById('guardrail-rules-container');
-    const rules = guardrailsData.rules || [];
+    const rules = _getCurrentRuleList();
     if (!rules.length) {
-        container.innerHTML = '<p class="text-sm text-[#7f849c]">Keine Regeln konfiguriert. Klicke "+ Regel hinzufügen".</p>';
+        container.innerHTML = '<p class="text-sm text-[#7f849c]">Keine Regeln konfiguriert für diesen Kontext. Klicke "+ Regel hinzufügen".</p>';
         return;
     }
     container.innerHTML = rules.map((rule, i) => `
-        <div class="flex flex-wrap gap-2 items-center bg-[#11111b] border border-[#313244] rounded p-3" data-idx="${i}">
-            <select class="rule-trigger bg-[#1e1e2e] border border-[#313244] rounded px-2 py-1.5 text-sm text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'trigger', this.value)">
+        <div class="flex flex-wrap gap-2 items-center bg-[#11111b] border border-[#313244] rounded p-2" data-idx="${i}">
+            <select class="rule-trigger bg-[#1e1e2e] border border-[#313244] rounded px-1 py-1 text-xs text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'trigger', this.value)">
                 ${_sel(TRIGGER_OPTS, rule.trigger || 'keyword')}
             </select>
-            <input type="text" class="rule-pattern flex-1 min-w-[160px] bg-[#1e1e2e] border border-[#313244] rounded px-2 py-1.5 text-sm text-[#cdd6f4] font-mono"
+            <input type="text" class="rule-pattern flex-1 min-w-[120px] bg-[#1e1e2e] border border-[#313244] rounded px-2 py-1 text-xs text-[#cdd6f4] font-mono"
                 placeholder="Pattern / Keyword (leer bei DLP)"
                 value="${escHtml(rule.pattern || '')}"
                 oninput="updateGuardrailRule(${i}, 'pattern', this.value)">
-            <select class="rule-action bg-[#1e1e2e] border border-[#313244] rounded px-2 py-1.5 text-sm text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'action', this.value)">
+            <select class="rule-action bg-[#1e1e2e] border border-[#313244] rounded px-1 py-1 text-xs text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'action', this.value)">
                 ${_sel(ACTION_OPTS, rule.action || 'deny')}
             </select>
-            <select class="rule-mode bg-[#1e1e2e] border border-[#313244] rounded px-2 py-1.5 text-sm text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'mode', this.value)">
+            <select class="rule-mode bg-[#1e1e2e] border border-[#313244] rounded px-1 py-1 text-xs text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'mode', this.value)">
                 ${_sel(MODE_OPTS, rule.mode || 'enforce')}
             </select>
             <button onclick="deleteGuardrailRule(${i})" class="text-[#f38ba8] hover:text-white text-lg leading-none px-1" title="Regel löschen">&times;</button>
@@ -1221,20 +1283,23 @@ function renderGuardrailRules() {
 }
 
 function addGuardrailRule() {
-    guardrailsData.rules.push({ trigger: 'keyword', pattern: '', action: 'deny', mode: 'enforce' });
+    _getCurrentRuleList().push({ trigger: 'keyword', pattern: '', action: 'deny', mode: 'enforce' });
     renderGuardrailRules();
 }
 
 function updateGuardrailRule(idx, key, value) {
-    guardrailsData.rules[idx][key] = value;
+    _getCurrentRuleList()[idx][key] = value;
 }
 
 function deleteGuardrailRule(idx) {
-    guardrailsData.rules.splice(idx, 1);
+    _getCurrentRuleList().splice(idx, 1);
     renderGuardrailRules();
 }
 
-async function saveGuardrails() {
+async function saveGuardrails(event) {
+    const btn = event.target;
+    const oldText = btn.innerText;
+    btn.innerText = 'Speichere...';
     try {
         const res = await fetch('/api/admin/guardrails', {
             method: 'POST',
@@ -1243,13 +1308,55 @@ async function saveGuardrails() {
         });
         const data = await res.json();
         if (data.ok) {
-            const btn = event.target;
             btn.innerText = '✓ Gespeichert!';
-            setTimeout(() => btn.innerText = 'Guardrails speichern', 2000);
+            setTimeout(() => btn.innerText = oldText, 2000);
         } else {
             alert('Fehler beim Speichern: ' + (data.error || '?'));
+            btn.innerText = oldText;
         }
-    } catch(e) { alert('Fehler: ' + e); }
+    } catch(e) { alert('Fehler: ' + e); btn.innerText = oldText; }
+}
+
+async function runSimulate() {
+    const prompt = document.getElementById('sim_prompt').value.trim();
+    if (!prompt) return;
+    const token = document.getElementById('sim_token').value;
+    const out = document.getElementById('sim_result');
+    out.innerHTML = '<span class="text-[#89b4fa]">Simuliere...</span>';
+    
+    // We send current UI state as custom rules so you can test before saving
+    let testRules = [...(guardrailsData.global_rules || [])];
+    if (token && guardrailsData.client_rules && guardrailsData.client_rules[token]) {
+        testRules = testRules.concat(guardrailsData.client_rules[token].rules || []);
+    }
+    
+    try {
+        const res = await fetch('/api/admin/guardrails/simulate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt, token_name: token, rules: testRules })
+        });
+        const data = await res.json();
+        
+        if(data.blocked) {
+            out.innerHTML = `
+                <div class="text-[#f38ba8] font-bold">🚫 BLOCKED (${data.result})</div>
+                <div class="mt-1 text-xs text-[#cdd6f4]">Grund: ${data.violation}</div>
+            `;
+        } else if (data.result === 'warn' || data.result === 'redirect' || data.result === 'rewrite') {
+            out.innerHTML = `
+                <div class="text-[#f9e2af] font-bold">⚠️ ${data.result.toUpperCase()}</div>
+                <div class="mt-1 text-xs text-[#cdd6f4]">Trigger: ${data.violation || data.triggered_rule?.trigger}</div>
+            `;
+            if (data.modified_prompt && data.modified_prompt !== prompt) {
+                out.innerHTML += `<div class="mt-2 text-[10px] text-[#7f849c] uppercase">Modified Prompt:</div><div class="text-xs bg-[#181825] p-1 rounded font-mono">${escHtml(data.modified_prompt)}</div>`;
+            }
+        } else {
+            out.innerHTML = `<div class="text-[#a6e3a1] font-bold">✅ PASS</div><div class="text-xs mt-1">Prompt wurde nicht blockiert oder verändert.</div>`;
+        }
+    } catch (e) {
+        out.innerHTML = `<span class="text-[#f38ba8]">Fehler: ${e}</span>`;
+    }
 }
 
 // ── Fail2Ban Bans ─────────────────────────────────────────────────────────

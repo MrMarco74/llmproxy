@@ -2,126 +2,386 @@
 {% block title %}Request Log — llmproxy{% endblock %}
 
 {% block content %}
-<div class="flex items-center gap-4 mb-4">
-  <h1 class="text-xl font-bold text-[#b4befe]">Request Log</h1>
-  <span class="text-sm text-[#7f849c]">{{ "{:,}".format(total).replace(",",".") }} Einträge gesamt</span>
-  <div class="ml-auto flex gap-2 text-sm">
-    {% for lim in [25, 50, 100, 200] %}
-    <a href="/log?limit={{ lim }}&page=1"
-       class="px-3 py-1 rounded {% if limit == lim %}bg-[#45475a] text-white{% else %}bg-[#1e1e2e] text-[#7f849c]{% endif %}">
-      {{ lim }}
-    </a>
-    {% endfor %}
+<div class="w-[80%] mx-auto pb-10">
+
+  <div class="flex items-center gap-4 mb-4">
+    <h1 class="text-xl font-bold text-[#b4befe]">Request Log</h1>
+    <span id="total_count" class="text-sm text-[#7f849c]">Lade...</span>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="card mb-4 flex flex-wrap gap-4 items-end sticky top-4 z-10 shadow-lg border-b border-[#313244]">
+    <div>
+      <label class="block text-xs text-[#7f849c] mb-1">Client (Token)</label>
+      <select id="filter_token" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4] w-40">
+        <option value="">Alle</option>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs text-[#7f849c] mb-1">Datum Von</label>
+      <input type="date" id="filter_date_from" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4]">
+    </div>
+    <div>
+      <label class="block text-xs text-[#7f849c] mb-1">Datum Bis</label>
+      <input type="date" id="filter_date_to" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4]">
+    </div>
+    <div>
+      <label class="block text-xs text-[#7f849c] mb-1">Modell</label>
+      <input type="text" id="filter_model" placeholder="z.B. llama3" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4] w-32">
+    </div>
+    <div>
+      <label class="block text-xs text-[#7f849c] mb-1">Status</label>
+      <select id="filter_status" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4] w-28">
+        <option value="">Alle</option>
+        <option value="ok">Nur 200 OK</option>
+        <option value="error">Nur Fehler</option>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs text-[#7f849c] mb-1">API</label>
+      <select id="filter_frontier" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4] w-28">
+        <option value="">Alle</option>
+        <option value="0">Nur Lokal</option>
+        <option value="1">Nur Frontier</option>
+      </select>
+    </div>
+    <div class="flex-grow">
+      <label class="block text-xs text-[#7f849c] mb-1">Prompt-Suche</label>
+      <input type="text" id="filter_search" placeholder="Suchbegriff..." class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4] w-full">
+    </div>
+    <div class="flex gap-2">
+      <button onclick="applyFilters()" class="bg-[#89b4fa] text-[#1e1e2e] px-4 py-1 rounded text-sm font-semibold hover:bg-[#b4befe]">Filtern</button>
+      <button onclick="resetFilters()" class="bg-[#313244] text-[#cdd6f4] px-4 py-1 rounded text-sm hover:bg-[#45475a]">Reset</button>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="card overflow-x-auto p-0">
+    <table class="w-full text-left border-collapse" id="log_table">
+      <thead>
+        <tr class="border-b border-[#313244] bg-[#181825]">
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] whitespace-nowrap">Zeit</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8]">Client / Token</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8]">Modell</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Tokens (In/Out)</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">TPS</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Dauer</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-center">HTTP</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8]">Aktion</th>
+        </tr>
+      </thead>
+      <tbody id="log_tbody">
+        <tr><td colspan="8" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>
+      </tbody>
+    </table>
+  </div>
+  
+  <!-- Pagination -->
+  <div class="flex justify-between items-center mt-4">
+    <div class="text-sm text-[#7f849c]">
+      Zeige <select id="page_limit" onchange="changeLimit()" class="bg-[#181825] border border-[#313244] rounded px-1 text-sm"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option></select> pro Seite
+    </div>
+    <div class="flex gap-2">
+      <button onclick="prevPage()" id="btn_prev" class="px-3 py-1 bg-[#313244] rounded text-sm disabled:opacity-50">Zurück</button>
+      <span id="page_info" class="px-3 py-1 text-sm text-[#cdd6f4]">Seite 1</span>
+      <button onclick="nextPage()" id="btn_next" class="px-3 py-1 bg-[#313244] rounded text-sm disabled:opacity-50">Vor</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Mini Guardrail Modal -->
+<div id="guardrail_modal" class="hidden fixed inset-0 bg-[#11111b] bg-opacity-80 flex items-center justify-center z-50">
+  <div class="bg-[#1e1e2e] border border-[#313244] rounded-lg shadow-2xl p-6 max-w-md w-full relative">
+    <button onclick="closeGuardrailModal()" class="absolute top-4 right-4 text-[#7f849c] hover:text-[#f38ba8]">✕</button>
+    <h3 class="text-lg font-bold text-[#fab387] mb-4">🛡️ Guardrail aus Log erstellen</h3>
+    <p class="text-xs text-[#cdd6f4] mb-4">Erstelle schnell eine Keyword- oder Regex-Regel basierend auf diesem Request. Du kannst sie danach im <a href="/admin#tab-guardrails" class="text-[#89b4fa] underline">Safeguards-Tab</a> verwalten.</p>
+    
+    <label class="block text-xs text-[#7f849c] mb-1">Gültig für Client</label>
+    <input type="text" id="grm_token" readonly class="w-full bg-[#181825] border border-[#313244] rounded p-2 text-sm text-[#a6adc8] mb-3 cursor-not-allowed">
+    
+    <label class="block text-xs text-[#7f849c] mb-1">Trigger-Typ</label>
+    <select id="grm_trigger" class="w-full bg-[#181825] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4] mb-3">
+      <option value="keyword">Keyword (Prompt enthält Text)</option>
+      <option value="regex">Regex (Muster)</option>
+      <option value="output_keyword">Output Keyword (Antwort enthält Text)</option>
+    </select>
+    
+    <label class="block text-xs text-[#7f849c] mb-1">Pattern / Suchbegriff</label>
+    <input type="text" id="grm_pattern" class="w-full bg-[#181825] border border-[#89b4fa] rounded p-2 text-sm text-[#cdd6f4] mb-3 focus:outline-none" placeholder="z.B. passwort, act as a linux terminal, ...">
+    
+    <label class="block text-xs text-[#7f849c] mb-1">Aktion bei Treffer</label>
+    <select id="grm_action" class="w-full bg-[#181825] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4] mb-4">
+      <option value="deny">Deny (Blockieren + Strike)</option>
+      <option value="silent">Silent (Blockieren als leere OK + Strike)</option>
+      <option value="warn">Warn (Zulassen + Logging)</option>
+    </select>
+    
+    <div class="flex justify-end gap-3">
+      <button onclick="closeGuardrailModal()" class="px-4 py-2 bg-[#313244] rounded text-sm">Abbrechen</button>
+      <button onclick="saveQuickGuardrail()" class="px-4 py-2 bg-[#a6e3a1] text-[#1e1e2e] rounded font-bold text-sm">Regel speichern</button>
+    </div>
   </div>
 </div>
 
-<div class="card mb-4 overflow-x-auto">
-  <table>
-    <thead>
-      <tr>
-        <th style="width:130px">Datum / Zeit</th>
-        <th style="width:110px">IP</th>
-        <th style="width:130px">Hostname</th>
-        <th style="width:160px">Modell</th>
-        <th style="width:70px;text-align:right">Tokens</th>
-        <th style="width:70px;text-align:right">Dauer</th>
-        <th style="width:40px;text-align:center">HTTP</th>
-        <th>Prompt</th>
-        <th>Response</th>
-      </tr>
-    </thead>
-    <tbody>
-    {% for r in rows %}
-    {% set time_part = r.ts.split('T')[1] if r.ts and 'T' in r.ts else (r.ts or '')[-8:] %}
-    <tr class="log-row">
-      <td class="text-[#585b70] whitespace-nowrap">
-        <span class="text-[#cdd6f4]">{{ r.date or '' }}</span><br>
-        <span class="text-xs">{{ time_part }}</span>
-      </td>
-      <td class="text-[#89b4fa] font-mono text-xs">{{ r.client_ip or '—' }}</td>
-      <td class="text-[#cba6f7] text-xs">
-        {% if r.hostname and r.hostname != r.client_ip %}
-          {{ r.hostname }}
-        {% else %}
-          <span class="text-[#45475a]">—</span>
-        {% endif %}
-      </td>
-      <td class="text-xs text-[#a6e3a1]">{{ r.model or '—' }}</td>
-      <td class="text-right text-xs">{{ "{:,}".format(r.total_tokens or 0).replace(",",".") }}</td>
-      <td class="text-right text-xs">
-        {% if r.duration_s %}{{ "%.1f"|format(r.duration_s) }}s{% else %}—{% endif %}
-      </td>
-      <td class="text-center text-xs">
-        {% if r.status_code == 200 %}
-          <span style="color:#a6e3a1">{{ r.status_code }}</span>
-        {% elif r.status_code %}
-          <span style="color:#f38ba8">{{ r.status_code }}</span>
-        {% else %}—{% endif %}
-      </td>
-      <td class="text-xs" style="max-width:280px">
-        {% if r.prompt_text %}
-          <span class="log-snippet" data-full="{{ r.prompt_text | e }}">{{ r.prompt_text[:120] | e }}{% if r.prompt_text|length > 120 %}…{% endif %}</span>
-          {% if r.prompt_text|length > 120 %}
-          <button class="expand-btn" onclick="expand(this)">mehr</button>
-          {% endif %}
-        {% else %}<span class="text-[#45475a]">—</span>{% endif %}
-      </td>
-      <td class="text-xs" style="max-width:280px">
-        {% if r.response_text %}
-          <span class="log-snippet" data-full="{{ r.response_text | e }}">{{ r.response_text[:120] | e }}{% if r.response_text|length > 120 %}…{% endif %}</span>
-          {% if r.response_text|length > 120 %}
-          <button class="expand-btn" onclick="expand(this)">mehr</button>
-          {% endif %}
-        {% else %}<span class="text-[#45475a]">—</span>{% endif %}
-      </td>
-    </tr>
-    {% else %}
-    <tr><td colspan="9" class="text-[#585b70] text-center py-6">Keine Einträge</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-</div>
-
-<!-- Pagination -->
-{% set pages = ((total - 1) // limit + 1) if total > 0 else 1 %}
-{% if pages > 1 %}
-<div class="flex gap-2 items-center text-sm">
-  {% if page > 1 %}
-  <a href="/log?page={{ page - 1 }}&limit={{ limit }}" class="px-3 py-1 rounded bg-[#1e1e2e] text-[#89b4fa]">← zurück</a>
-  {% endif %}
-  <span class="text-[#7f849c]">Seite {{ page }} / {{ pages }}</span>
-  {% if page < pages %}
-  <a href="/log?page={{ page + 1 }}&limit={{ limit }}" class="px-3 py-1 rounded bg-[#1e1e2e] text-[#89b4fa]">weiter →</a>
-  {% endif %}
-</div>
-{% endif %}
 {% endblock %}
 
 {% block scripts %}
-<style>
-  .expand-btn {
-    margin-left: 4px;
-    font-size: 10px;
-    color: #89b4fa;
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0;
-    vertical-align: baseline;
-  }
-  .expand-btn:hover { text-decoration: underline; }
-  .log-snippet { white-space: pre-wrap; word-break: break-word; color: #cdd6f4; }
-</style>
 <script>
-function expand(btn) {
-  const span = btn.previousElementSibling;
-  span.textContent = span.dataset.full;
-  btn.textContent = 'weniger';
-  btn.onclick = function() {
-    span.textContent = span.dataset.full.slice(0, 120) + (span.dataset.full.length > 120 ? '…' : '');
-    btn.textContent = 'mehr';
-    btn.onclick = function() { expand(btn); };
-  };
+let currentPage = 1;
+let currentTotal = 0;
+let clientsList = [];
+let fullConfig = null;
+
+async function init() {
+  await fetchClients();
+  await fetchConfig();
+  loadData();
 }
+
+async function fetchClients() {
+  try {
+    const res = await fetch('/api/admin/clients');
+    if (res.ok) {
+      const data = await res.json();
+      clientsList = data.clients || [];
+      const sel = document.getElementById('filter_token');
+      clientsList.forEach(c => {
+        if(c.token) {
+           const opt = document.createElement('option');
+           opt.value = c.token;
+           opt.textContent = `${c.name} (${c.token})`;
+           sel.appendChild(opt);
+        }
+      });
+    }
+  } catch (e) { console.error(e); }
+}
+
+async function fetchConfig() {
+  try {
+    const res = await fetch('/api/admin/guardrails');
+    if (res.ok) {
+      fullConfig = await res.json();
+    }
+  } catch(e) {}
+}
+
+async function loadData() {
+  const tbody = document.getElementById('log_tbody');
+  tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>';
+  
+  const limit = document.getElementById('page_limit').value;
+  const offset = (currentPage - 1) * limit;
+  
+  const params = new URLSearchParams({
+    limit: limit,
+    offset: offset,
+    token_name: document.getElementById('filter_token').value,
+    date_from: document.getElementById('filter_date_from').value,
+    date_to: document.getElementById('filter_date_to').value,
+    model: document.getElementById('filter_model').value,
+    status: document.getElementById('filter_status').value,
+    search: document.getElementById('filter_search').value,
+    is_frontier: document.getElementById('filter_frontier').value
+  });
+  
+  try {
+    const res = await fetch(`/api/log?${params.toString()}`);
+    const data = await res.json();
+    currentTotal = data.total || 0;
+    document.getElementById('total_count').textContent = `${currentTotal.toLocaleString('de-DE')} Einträge gefiltert`;
+    
+    renderTable(data.rows || []);
+    updatePagination();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-[#f38ba8]">Fehler beim Laden: ${e}</td></tr>`;
+  }
+}
+
+function renderTable(rows) {
+  const tbody = document.getElementById('log_tbody');
+  tbody.innerHTML = '';
+  
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-[#7f849c]">Keine Einträge gefunden.</td></tr>';
+    return;
+  }
+  
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.className = "border-b border-[#313244] hover:bg-[#181825] cursor-pointer group";
+    tr.onclick = (e) => {
+       if(!e.target.closest('button')) toggleDetails(r.id);
+    };
+    
+    const timeParts = (r.ts || '').split('T');
+    const timePart = timeParts.length > 1 ? timeParts[1].substring(0,8) : (r.ts||'').substring(0,8);
+    const tsHtml = `<span class="text-[#cdd6f4]">${r.date||''}</span><br><span class="text-[#7f849c] text-[10px]">${timePart}</span>`;
+    
+    const clientName = r.token_name || r.client_ip || '—';
+    const hostHtml = (r.hostname && r.hostname !== r.client_ip) ? `<br><span class="text-[#7f849c] text-[10px]">${r.hostname}</span>` : '';
+    const clientHtml = `<span class="text-[#89b4fa] font-mono">${clientName}</span>${hostHtml}`;
+    
+    const frontierBadge = r.is_frontier ? `<span class="ml-2 text-[10px] bg-[#fab387] text-[#11111b] px-1 rounded font-bold">EXT</span>` : '';
+    const modelHtml = `<span class="text-[#a6e3a1]">${r.model || '—'}</span>${frontierBadge}`;
+    
+    const tokenHtml = `<span class="text-[#cdd6f4]">${r.prompt_tokens||0}</span> <span class="text-[#7f849c]">/</span> <span class="text-[#cdd6f4]">${r.completion_tokens||0}</span><br><span class="text-[#7f849c] text-[10px]">Total: ${r.total_tokens||0}</span>`;
+    
+    const tpsHtml = r.tokens_per_second ? `<span class="text-[#cba6f7]">${r.tokens_per_second.toFixed(1)}</span>` : '<span class="text-[#45475a]">—</span>';
+    const durHtml = r.duration_s ? `<span class="text-[#f9e2af]">${r.duration_s.toFixed(1)}s</span>` : '<span class="text-[#45475a]">—</span>';
+    
+    let statusHtml = '<span class="text-[#45475a]">—</span>';
+    if(r.status_code === 200) statusHtml = `<span class="text-[#a6e3a1]">${r.status_code}</span>`;
+    else if(r.status_code) statusHtml = `<span class="text-[#f38ba8]">${r.status_code}</span>`;
+    
+    tr.innerHTML = `
+      <td class="p-3 text-xs whitespace-nowrap">${tsHtml}</td>
+      <td class="p-3 text-xs">${clientHtml}</td>
+      <td class="p-3 text-xs">${modelHtml}</td>
+      <td class="p-3 text-xs text-right">${tokenHtml}</td>
+      <td class="p-3 text-xs text-right">${tpsHtml}</td>
+      <td class="p-3 text-xs text-right">${durHtml}</td>
+      <td class="p-3 text-xs text-center">${statusHtml}</td>
+      <td class="p-3 text-xs">
+        <button onclick="openGuardrailModal('${r.token_name||''}')" class="bg-[#313244] hover:bg-[#f38ba8] text-white px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">🛡️ Guardrail</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+    
+    const trDet = document.createElement('tr');
+    trDet.id = `det_${r.id}`;
+    trDet.className = "hidden bg-[#11111b] border-b border-[#313244]";
+    
+    let pText = r.prompt_text ? r.prompt_text.replace(/</g, "&lt;").replace(/>/g, "&gt;") : "<i>Kein Prompt</i>";
+    let rText = r.response_text ? r.response_text.replace(/</g, "&lt;").replace(/>/g, "&gt;") : "<i>Keine Response</i>";
+    
+    trDet.innerHTML = `
+      <td colspan="8" class="p-4">
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <div class="text-[10px] uppercase font-bold text-[#7f849c] mb-1">Prompt</div>
+            <div class="bg-[#181825] border border-[#313244] rounded p-2 text-xs text-[#cdd6f4] max-h-48 overflow-y-auto whitespace-pre-wrap">${pText}</div>
+          </div>
+          <div>
+            <div class="text-[10px] uppercase font-bold text-[#7f849c] mb-1">Response</div>
+            <div class="bg-[#181825] border border-[#313244] rounded p-2 text-xs text-[#a6e3a1] max-h-48 overflow-y-auto whitespace-pre-wrap">${rText}</div>
+          </div>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(trDet);
+  });
+}
+
+function toggleDetails(id) {
+  const el = document.getElementById(`det_${id}`);
+  if (el) el.classList.toggle('hidden');
+}
+
+function applyFilters() {
+  currentPage = 1;
+  loadData();
+}
+
+function resetFilters() {
+  document.getElementById('filter_token').value = "";
+  document.getElementById('filter_date_from').value = "";
+  document.getElementById('filter_date_to').value = "";
+  document.getElementById('filter_model').value = "";
+  document.getElementById('filter_status').value = "";
+  document.getElementById('filter_search').value = "";
+  document.getElementById('filter_frontier').value = "";
+  applyFilters();
+}
+
+function changeLimit() {
+  currentPage = 1;
+  loadData();
+}
+
+function updatePagination() {
+  const limit = parseInt(document.getElementById('page_limit').value);
+  const totalPages = Math.max(1, Math.ceil(currentTotal / limit));
+  
+  document.getElementById('page_info').textContent = `Seite ${currentPage} von ${totalPages}`;
+  document.getElementById('btn_prev').disabled = (currentPage <= 1);
+  document.getElementById('btn_next').disabled = (currentPage >= totalPages);
+}
+
+function prevPage() {
+  if (currentPage > 1) {
+    currentPage--;
+    loadData();
+  }
+}
+function nextPage() {
+  const limit = parseInt(document.getElementById('page_limit').value);
+  if (currentPage * limit < currentTotal) {
+    currentPage++;
+    loadData();
+  }
+}
+
+// ── Guardrail Modal ────────────────────────────────────────────────────────
+function openGuardrailModal(tokenName) {
+  document.getElementById('grm_token').value = tokenName || 'global';
+  document.getElementById('grm_pattern').value = '';
+  document.getElementById('grm_trigger').value = 'keyword';
+  document.getElementById('grm_action').value = 'deny';
+  document.getElementById('guardrail_modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('grm_pattern').focus(), 100);
+}
+
+function closeGuardrailModal() {
+  document.getElementById('guardrail_modal').classList.add('hidden');
+}
+
+async function saveQuickGuardrail() {
+  const token = document.getElementById('grm_token').value;
+  const trigger = document.getElementById('grm_trigger').value;
+  const pattern = document.getElementById('grm_pattern').value.trim();
+  const action = document.getElementById('grm_action').value;
+  
+  if (!pattern) {
+    alert("Bitte ein Suchmuster eingeben.");
+    return;
+  }
+  
+  if (!fullConfig) {
+    alert("Konfiguration nicht geladen, probiere es später erneut.");
+    return;
+  }
+  
+  const newRule = { trigger, pattern, action, mode: "enforce", id: "log_" + Date.now().toString(36) };
+  
+  if (token === "global" || token === "") {
+    if (!fullConfig.global_rules) fullConfig.global_rules = [];
+    fullConfig.global_rules.push(newRule);
+  } else {
+    if (!fullConfig.client_rules) fullConfig.client_rules = {};
+    if (!fullConfig.client_rules[token]) fullConfig.client_rules[token] = {rules: []};
+    fullConfig.client_rules[token].rules.push(newRule);
+  }
+  
+  try {
+    const res = await fetch('/api/admin/guardrails', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(fullConfig)
+    });
+    const d = await res.json();
+    if(d.ok) {
+      alert("Guardrail gespeichert! Er kann im Safeguards-Tab weiter bearbeitet werden.");
+      closeGuardrailModal();
+    } else {
+      alert("Fehler beim Speichern: " + d.error);
+    }
+  } catch(e) {
+    alert("Netzwerkfehler");
+  }
+}
+
+document.addEventListener('DOMContentLoaded', init);
 </script>
 {% endblock %}

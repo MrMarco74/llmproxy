@@ -181,7 +181,7 @@ _notify_cfg       = _load_yaml("notifications.yaml",  {"events": {}})
 _logging_cfg      = _load_yaml("logging.yaml",        {"enabled": True})
 _fallback_cfg     = _load_yaml("fallback.yaml",        {"enabled": False, "mapping": {}})
 
-_guardrails_cfg = _load_yaml("guardrails.yaml", {"enabled": False, "rules": []})
+_guardrails_cfg = _load_yaml("guardrails.yaml", {"enabled": False, "global_rules": [], "client_rules": {}})
 _fail2ban_cfg = _load_yaml("fail2ban.yaml", {"bans": {}})
 
 def _dlp_mask(text: str) -> str:
@@ -233,44 +233,30 @@ def _record_violation(token_name: str, client_ip: str, rule: dict, prompt: str):
         _log_to_splunk("guardrail_fail2ban", {"token_name": token_name, "duration": 3600})
 
 
-def _check_output_safeguards(text: str, token_name: str) -> bool:
-    # Basic output guardrail check (returns True if safe, False if blocked)
-    if not _guardrails_cfg.get("enabled", False):
-        return True
-        
-    rules = _guardrails_cfg.get("rules", [])
-    text_lower = text.lower()
-    for rule in rules:
-        if rule.get("trigger") == "output_keyword":
-            if rule.get("pattern", "").lower() in text_lower:
-                _log_to_splunk("output_guardrail_violation", {"token_name": token_name, "rule": rule, "snippet": text[:200]})
-                return False
-        elif rule.get("trigger") == "output_dlp":
-            if re.search(r'\d{4}-\d{4}-\d{4}-\d{4}', text): # e.g. leaked credit card
-                _log_to_splunk("output_guardrail_dlp_leak", {"token_name": token_name, "snippet": text[:200]})
-                return False
-    return True
+def _get_effective_rules(token_name: str) -> list:
+    """Merge global_rules + per-client rules for a given token_name.
+    Client rules are appended after global rules, giving them lower precedence
+    by default but evaluated in order — so client-specific deny rules fire first
+    when placed at the start of client_rules list."""
+    global_rules = _guardrails_cfg.get("global_rules", _guardrails_cfg.get("rules", []))
+    client_rules = _guardrails_cfg.get("client_rules", {}).get(token_name, {}).get("rules", [])
+    return list(global_rules) + list(client_rules)
 
 
-def _run_guardrails(prompt_text: str, token_name: str, client_ip: str, body: dict) -> tuple[bool, str|None, str, dict]:
-    if not _guardrails_cfg.get("enabled", False):
-        return False, None, "pass", body
-        
-    if _is_banned(token_name):
-        return False, "Token is banned (Fail2Ban)", "deny", body
-        
-    rules = _guardrails_cfg.get("rules", [])
+def _apply_rules(prompt_text: str, token_name: str, client_ip: str, body: dict,
+                 rules: list, record: bool = True) -> tuple[bool, str|None, str, dict, dict|None]:
+    """Core rule engine. Returns (modified, violation_msg, action, new_body, triggered_rule)."""
+    import re as _re
     prompt_lower = prompt_text.lower()
-    
     modified = False
     new_body = body.copy()
-    
+
     for rule in rules:
         trigger = rule.get("trigger", "keyword")
         pattern = rule.get("pattern", "")
         action = rule.get("action", "pass")
         mode = rule.get("mode", "enforce")
-        
+
         hit = False
         if trigger == "dlp":
             masked = _dlp_mask(prompt_text)
@@ -279,39 +265,69 @@ def _run_guardrails(prompt_text: str, token_name: str, client_ip: str, body: dic
                 if action == "rewrite" and mode == "enforce":
                     prompt_text = masked
                     modified = True
-                    
         elif trigger == "keyword":
             if pattern.lower() in prompt_lower:
                 hit = True
-                
-        elif trigger == "regex":
-            import re
-            if re.search(pattern, prompt_text, re.IGNORECASE):
-                hit = True
-                
+        elif trigger in ("regex", "output_keyword"):
+            try:
+                if _re.search(pattern, prompt_text, _re.IGNORECASE):
+                    hit = True
+            except Exception:
+                pass
+
         if hit:
-            msg = f"Triggered {trigger}: {pattern}"
-            if mode == "shadow":
+            msg = f"Triggered {trigger}: {pattern!r}"
+            if mode in ("shadow", "monitor"):
                 _log_to_splunk("guardrail_shadow_violation", {"token_name": token_name, "rule": rule, "snippet": prompt_text[:200]})
                 continue
-                
             if action in ("deny", "silent"):
-                _record_violation(token_name, client_ip, rule, prompt_text)
-                return False, msg, action, new_body
-                
+                if record:
+                    _record_violation(token_name, client_ip, rule, prompt_text)
+                return False, msg, action, new_body, rule
             if action == "redirect":
                 new_body["model"] = rule.get("target_model", "local-fallback")
                 modified = True
                 _log_to_splunk("guardrail_redirected", {"token_name": token_name, "from": body.get("model"), "to": new_body["model"]})
-                
+            if action == "warn" and record:
+                _record_violation(token_name, client_ip, rule, prompt_text)
+
     if modified:
-        if "messages" in new_body and isinstance(new_body["messages"], list) and len(new_body["messages"]) > 0:
+        if "messages" in new_body and isinstance(new_body["messages"], list) and new_body["messages"]:
             new_body["messages"][-1]["content"] = prompt_text
         elif "prompt" in new_body:
             new_body["prompt"] = prompt_text
         _log_to_splunk("guardrail_rewritten", {"token_name": token_name})
-            
-    return modified, None, "pass", new_body
+
+    return modified, None, "pass", new_body, None
+
+
+def _check_output_safeguards(text: str, token_name: str) -> bool:
+    if not _guardrails_cfg.get("enabled", False):
+        return True
+    rules = _get_effective_rules(token_name)
+    text_lower = text.lower()
+    import re
+    for rule in rules:
+        if rule.get("trigger") == "output_keyword":
+            if rule.get("pattern", "").lower() in text_lower:
+                _log_to_splunk("output_guardrail_violation", {"token_name": token_name, "rule": rule, "snippet": text[:200]})
+                return False
+        elif rule.get("trigger") == "output_dlp":
+            if re.search(r'\b\d{4}-\d{4}-\d{4}-\d{4}\b', text):
+                _log_to_splunk("output_guardrail_dlp_leak", {"token_name": token_name, "snippet": text[:200]})
+                return False
+    return True
+
+
+def _run_guardrails(prompt_text: str, token_name: str, client_ip: str, body: dict) -> tuple[bool, str|None, str, dict]:
+    if not _guardrails_cfg.get("enabled", False):
+        return False, None, "pass", body
+    if _is_banned(token_name):
+        return False, "Token is banned (Fail2Ban)", "deny", body
+    rules = _get_effective_rules(token_name)
+    modified, violation, action, new_body, _ = _apply_rules(prompt_text, token_name, client_ip, body, rules, record=True)
+    return modified, violation, action, new_body
+
 
 async def _guard_safeguards(request: Request):
     if request.url.path not in ["/api/chat", "/api/generate", "/v1/chat/completions"]:
@@ -2266,7 +2282,12 @@ async def set_fallback_config(request: Request):
 @app.get("/admin/guardrails")
 async def get_guardrails_config(request: Request):
     _check_admin(request)
-    return _guardrails_cfg
+    # Migrate legacy flat structure on-the-fly
+    cfg = dict(_guardrails_cfg)
+    if "rules" in cfg and "global_rules" not in cfg:
+        cfg["global_rules"] = cfg.pop("rules", [])
+        cfg.setdefault("client_rules", {})
+    return cfg
 
 @app.post("/admin/guardrails")
 async def set_guardrails_config(request: Request):
@@ -2274,12 +2295,148 @@ async def set_guardrails_config(request: Request):
     global _guardrails_cfg
     try:
         data = await request.json()
+        # Normalize: always store as new structure
+        if "rules" in data and "global_rules" not in data:
+            data["global_rules"] = data.pop("rules", [])
+        data.setdefault("global_rules", [])
+        data.setdefault("client_rules", {})
         _guardrails_cfg = data
         with open(CONFIG_DIR / "guardrails.yaml", "w") as f:
             yaml.safe_dump(_guardrails_cfg, f)
         return {"ok": True, "config": _guardrails_cfg}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+@app.post("/admin/guardrails/simulate")
+async def simulate_guardrails(request: Request):
+    _check_admin(request)
+    try:
+        data = await request.json()
+        prompt = data.get("prompt", "")
+        token_name = data.get("token_name", "")
+        # Use custom rules from request if provided, else live config
+        custom_rules = data.get("rules")  # list or None
+        if custom_rules is not None:
+            rules = custom_rules
+        else:
+            if not _guardrails_cfg.get("enabled", False):
+                return {"result": "pass", "note": "Guardrails disabled"}
+            rules = _get_effective_rules(token_name)
+        modified, violation, action, new_body, triggered_rule = _apply_rules(
+            prompt, token_name, "simulate", {"messages": [{"role": "user", "content": prompt}]},
+            rules, record=False
+        )
+        return {
+            "result": action,
+            "blocked": action in ("deny", "silent"),
+            "violation": violation,
+            "triggered_rule": triggered_rule,
+            "modified_prompt": new_body.get("messages", [{}])[-1].get("content", prompt) if modified else None,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/admin/guardrails/simulate-batch")
+async def simulate_guardrails_batch(request: Request):
+    _check_admin(request)
+    try:
+        data = await request.json()
+        token_name = data.get("token_name", "")
+        limit = min(int(data.get("limit", 100)), 500)
+        custom_rules = data.get("rules")
+        if custom_rules is not None:
+            rules = custom_rules
+        else:
+            rules = _get_effective_rules(token_name)
+        # Pull recent prompts from DB
+        where = "WHERE prompt_text IS NOT NULL AND prompt_text != ''"
+        params: list = []
+        if token_name:
+            where += " AND token_name = ?"
+            params.append(token_name)
+        cur = _db().execute(
+            f"SELECT id, ts, token_name, client_ip, prompt_text FROM requests "
+            f"{where} ORDER BY id DESC LIMIT ?",
+            params + [limit]
+        )
+        rows = cur.fetchall()
+        results = []
+        blocked_count = 0
+        for row in rows:
+            rid, ts, tn, ip, prompt = row
+            _, violation, action, _, triggered_rule = _apply_rules(
+                prompt or "", tn or "", ip or "",
+                {"messages": [{"role": "user", "content": prompt}]},
+                rules, record=False
+            )
+            would_block = action in ("deny", "silent")
+            if would_block:
+                blocked_count += 1
+            results.append({
+                "id": rid, "ts": ts, "token_name": tn,
+                "blocked": would_block, "action": action,
+                "violation": violation,
+                "triggered_rule": triggered_rule,
+                "prompt_snippet": (prompt or "")[:120],
+            })
+        return {
+            "total": len(results),
+            "blocked": blocked_count,
+            "pass": len(results) - blocked_count,
+            "results": results,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/admin/log")
+async def get_log_filtered(request: Request, token_name: str = "", model: str = "",
+                           date_from: str = "", date_to: str = "", status: str = "",
+                           search: str = "", is_frontier: str = "",
+                           limit: int = 50, offset: int = 0):
+    _check_admin(request)
+    limit = max(1, min(limit, 500))
+    where_parts = []
+    params: list = []
+    if token_name:
+        where_parts.append("token_name = ?")
+        params.append(token_name)
+    if model:
+        where_parts.append("model LIKE ?")
+        params.append(f"%{model}%")
+    if date_from:
+        where_parts.append("date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("date <= ?")
+        params.append(date_to)
+    if status == "ok":
+        where_parts.append("(status_code = 200 OR status_code IS NULL)")
+    elif status == "error":
+        where_parts.append("status_code != 200 AND status_code IS NOT NULL")
+    if search:
+        where_parts.append("prompt_text LIKE ?")
+        params.append(f"%{search}%")
+    if is_frontier == "1":
+        where_parts.append("is_frontier = 1")
+    elif is_frontier == "0":
+        where_parts.append("(is_frontier = 0 OR is_frontier IS NULL)")
+    where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    count_cur = _db().execute(f"SELECT COUNT(*) FROM requests {where_sql}", params)
+    total = count_cur.fetchone()[0]
+    cur = _db().execute(
+        f"SELECT id, ts, date, token_name, client_ip, hostname, model, "
+        f"prompt_tokens, completion_tokens, total_tokens, tokens_per_second, "
+        f"duration_s, ttft_s, status_code, is_frontier, stream, "
+        f"complexity_score, prompt_text, response_text "
+        f"FROM requests {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
+        params + [limit, offset]
+    )
+    cols = ["id","ts","date","token_name","client_ip","hostname","model",
+            "prompt_tokens","completion_tokens","total_tokens","tokens_per_second",
+            "duration_s","ttft_s","status_code","is_frontier","stream",
+            "complexity_score","prompt_text","response_text"]
+    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    return {"total": total, "rows": rows}
 
 @app.get("/admin/bans")
 async def get_bans(request: Request):
