@@ -321,12 +321,12 @@ function renderClientsTable(clients, usage) {
         const statusHTML = cfg.blocked ? '<span class="badge-gaming">Blocked</span>' : '<span class="badge-ok">Active</span>';
         
         
-        let tokenHTML = '<span class="text-xs text-[#7f849c]">IP-based (No token)</span><br><button onclick="generateTokenForClient(\\'' + ip + '\\')" class="text-xs text-[#89b4fa] hover:underline mt-1">Generate</button>';
+        let tokenHTML = `<span class="text-xs text-[#7f849c]">IP-based (No token)</span><br><button onclick="generateTokenForClient('${ip}')" class="text-xs text-[#89b4fa] hover:underline mt-1">Generate</button>`;
         if (cfg.token) {
-            tokenHTML = '<div class="flex items-center gap-2"><span class="font-mono text-sm text-[#7f849c]" title="Click to copy" onclick="copyExistingToken(\\'' + escHtml(cfg.token) + '\\')" style="cursor:pointer">' + escHtml(cfg.token.slice(0, 8)) + '…' + escHtml(cfg.token.slice(-4)) + '</span></div>' +
-                        '<div class="mt-1 flex gap-2"><button onclick="copyExistingToken(\\'' + escHtml(cfg.token) + '\\')" class="text-xs text-[#a6e3a1] hover:underline">Copy</button>' +
-                        '<button onclick="generateTokenForClient(\\'' + ip + '\\')" class="text-xs text-[#89b4fa] hover:underline">Rotate</button>' +
-                        '<button onclick="revokeTokenForClient(\\'' + ip + '\\')" class="text-xs text-[#f38ba8] hover:underline">Revoke</button></div>';
+            tokenHTML = `<div class="flex items-center gap-2"><span class="font-mono text-sm text-[#7f849c]" title="Click to copy" onclick="copyExistingToken('${escHtml(cfg.token)}')" style="cursor:pointer">${escHtml(cfg.token.slice(0, 8))}…${escHtml(cfg.token.slice(-4))}</span></div>` +
+                        `<div class="mt-1 flex gap-2"><button onclick="copyExistingToken('${escHtml(cfg.token)}')" class="text-xs text-[#a6e3a1] hover:underline">Copy</button>` +
+                        `<button onclick="generateTokenForClient('${ip}')" class="text-xs text-[#89b4fa] hover:underline">Rotate</button>` +
+                        `<button onclick="revokeTokenForClient('${ip}')" class="text-xs text-[#f38ba8] hover:underline">Revoke</button></div>`;
         }
         
         html += `<tr>
