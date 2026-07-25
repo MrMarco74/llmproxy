@@ -8,6 +8,21 @@
 
 <div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
 
+  <div class="card relative pl-10 border-l-4 border-l-[#89b4fa]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#89b4fa] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#89b4fa] text-lg">v2.9.0 &mdash; Unified Client Tokens &amp; Safeguards UI</h2>
+      <span class="text-sm text-[#7f849c]">25. Juli 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Clients &amp; Tokens zusammengef&#252;hrt:</strong> Die separate <code class="bg-[#313244] px-1 py-0.5 rounded">tokens.yaml</code> wurde abgeschafft. Bearer-Tokens leben jetzt direkt als <code class="bg-[#313244] px-1 py-0.5 rounded">token:</code>-Feld im jeweiligen Client-Eintrag in <code class="bg-[#313244] px-1 py-0.5 rounded">clients.yaml</code>. Zero-downtime Migration beim ersten Start nach dem Update.</li>
+      <li><strong>Admin UI aufger&#228;umt:</strong> Der separate &bdquo;&#128273; Tokens&ldquo;-Tab ist Geschichte. Neue <strong>API Token</strong>-Spalte direkt in der Clients-Tabelle &mdash; mit Inline-Buttons zum Generieren, Kopieren, Rotieren und Widerrufen von Tokens.</li>
+      <li><strong>Neuer &#128737;&#65039; Safeguards-Tab:</strong> Guardrails (Prompt-Filter, Regex, DLP-Masking, Output-Filter) lassen sich jetzt vollst&#228;ndig &#252;ber das Dashboard konfigurieren &mdash; ohne direkte YAML-Edits auf dem Server.</li>
+      <li><strong>Fail2Ban-&#220;bersicht:</strong> Der Safeguards-Tab zeigt aktive Sperren live an und erlaubt das manuelle Entsperren einzelner Clients per Knopfdruck.</li>
+      <li><strong>CLI-Tool aktualisiert:</strong> <code class="bg-[#313244] px-1 py-0.5 rounded">scripts/generate_tokens.py</code> schreibt Tokens nun direkt in <code class="bg-[#313244] px-1 py-0.5 rounded">clients.yaml</code> (<code class="bg-[#313244] px-1 py-0.5 rounded">--force</code> zum Rotieren aller).</li>
+    </ul>
+  </div>
+
   <div class="card relative pl-10 border-l-4 border-l-[#a6e3a1]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#a6e3a1] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">
