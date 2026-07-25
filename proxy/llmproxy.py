@@ -524,7 +524,7 @@ def _db() -> sqlite3.Connection:
 def _db_insert_request(**kw):
     token_name = kw.get("token_name")
     if token_name:
-        meta = _tokens_cfg.get("metadata", {}).get(token_name, {})
+        meta = _client_cfg.get("metadata", {}).get(token_name, {})
         kw["project"] = meta.get("project", "")
         kw["org_group"] = meta.get("org_group", "")
         kw["user"] = meta.get("user", "")
@@ -1135,7 +1135,7 @@ def _check_budget(token_name: str, is_frontier: bool = False) -> tuple[bool, int
     col = "tokens_used_frontier" if is_frontier else "tokens_used_local"
     try:
         cur = _db().execute(
-            f"SELECT {col} FROM budgets WHERE token_name=? AND date=?", [client_ip, today]
+            f"SELECT {col} FROM budgets WHERE token_name=? AND date=?", [token_name, today]
         )
         row = cur.fetchone()
         used = row[0] if row else 0
@@ -1166,17 +1166,17 @@ async def _check_budget_warnings(token_name: str, is_frontier: bool = False):
     lbl = "Frontier-" if is_frontier else "Lokal-"
     try:
         cur = _db().execute(
-            f"SELECT {col} FROM budgets WHERE token_name=? AND date=?", [client_ip, today]
+            f"SELECT {col} FROM budgets WHERE token_name=? AND date=?", [token_name, today]
         )
         row = cur.fetchone()
         used = row[0] if row else 0
         pct = used / limit * 100 if limit > 0 else 0
         if 80 <= pct < 100:
-            await _notify("budget_warning", f"⚠️ {lbl}Budget-Warnung {client_ip}",
-                          f"{client_ip}: {pct:.0f}% des {lbl}Tages-Budgets verbraucht ({used:,}/{limit:,} Tokens)")
+            await _notify("budget_warning", f"⚠️ {lbl}Budget-Warnung {token_name}",
+                          f"{token_name}: {pct:.0f}% des {lbl}Tages-Budgets verbraucht ({used:,}/{limit:,} Tokens)")
         elif pct >= 100:
-            await _notify("budget_exceeded", f"🚫 {lbl}Budget überschritten {client_ip}",
-                          f"{client_ip}: {lbl}Tages-Budget erschöpft ({limit:,} Tokens). Reset um Mitternacht.", "high")
+            await _notify("budget_exceeded", f"🚫 {lbl}Budget überschritten {token_name}",
+                          f"{token_name}: {lbl}Tages-Budget erschöpft ({limit:,} Tokens). Reset um Mitternacht.", "high")
     except Exception:
         pass
 
