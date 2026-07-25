@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Generate one bearer token per client_id in config/clients.yaml and write config/tokens.yaml.
+"""Generate one bearer token per client_id in config/clients.yaml directly.
 
 Usage: python3 scripts/generate_tokens.py [--force]
-  --force   regenerate tokens even for client_ids that already have one in tokens.yaml
+  --force   regenerate tokens even for client_ids that already have one
             (existing tokens are kept by default so re-running this doesn't rotate
             everything and break already-deployed apps).
 
@@ -21,27 +21,34 @@ def main():
     force = "--force" in sys.argv
 
     clients_path = CONFIG_DIR / "clients.yaml"
-    tokens_path = CONFIG_DIR / "tokens.yaml"
+    if not clients_path.exists():
+        print(f"Error: {clients_path} not found.")
+        sys.exit(1)
 
     clients_cfg = yaml.safe_load(clients_path.read_text()) or {"clients": {}}
-    tokens_cfg = yaml.safe_load(tokens_path.read_text()) or {"tokens": {}}
-    tokens = tokens_cfg.get("tokens", {}) or {}
+    clients = clients_cfg.get("clients", {})
+    
+    generated_count = 0
 
-    existing_by_client = {v: k for k, v in tokens.items()}
-
-    for client_id in clients_cfg.get("clients", {}):
+    for client_id, client_data in clients.items():
         if client_id == "default":
             continue  # "default" is the IP-fallback bucket, not a real app — no token
-        if not force and client_id in existing_by_client:
+        
+        has_token = "token" in client_data and client_data["token"]
+        
+        if not force and has_token:
             continue
-        if client_id in existing_by_client:
-            del tokens[existing_by_client[client_id]]
+            
         new_token = secrets.token_urlsafe(32)
-        tokens[new_token] = client_id
+        client_data["token"] = new_token
         print(f"{client_id}: {new_token}")
+        generated_count += 1
 
-    tokens_path.write_text(yaml.safe_dump({"tokens": tokens}, default_flow_style=False))
-    print(f"\nWrote {len(tokens)} token(s) to {tokens_path}")
+    if generated_count > 0:
+        clients_path.write_text(yaml.safe_dump(clients_cfg, default_flow_style=False))
+        print(f"\nWrote {generated_count} new token(s) to {clients_path}")
+    else:
+        print("No new tokens needed. All clients already have tokens (use --force to rotate all).")
 
 
 if __name__ == "__main__":

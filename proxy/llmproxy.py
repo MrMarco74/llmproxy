@@ -141,7 +141,39 @@ def _load_yaml(name: str, default: dict) -> dict:
     return default
 
 _client_cfg       = _load_yaml("clients.yaml",       {"clients": {"default": {"limit": 5_000_000, "models": "*", "blocked": False}}})
-_tokens_cfg       = _load_yaml("tokens.yaml",        {"tokens": {}})
+
+_token_map = {}
+
+def _build_token_map():
+    global _token_map
+    _token_map.clear()
+    for cid, cinfo in _client_cfg.get("clients", {}).items():
+        t = cinfo.get("token")
+        if t:
+            _token_map[t] = cid
+
+def _migrate_tokens():
+    # Zero-downtime migration: merge legacy tokens.yaml into clients.yaml
+    tokens_file = CONFIG_DIR / "tokens.yaml"
+    if tokens_file.exists():
+        try:
+            legacy_tokens = yaml.safe_load(tokens_file.read_text()) or {}
+            t_map = legacy_tokens.get("tokens", {})
+            changed = False
+            for tok, cid in t_map.items():
+                if cid in _client_cfg.get("clients", {}):
+                    _client_cfg["clients"][cid]["token"] = tok
+                    changed = True
+            if changed:
+                with open(CONFIG_DIR / "clients.yaml", "w") as f:
+                    yaml.safe_dump(_client_cfg, f)
+            import shutil
+            shutil.move(str(tokens_file), str(tokens_file) + ".bak")
+        except Exception:
+            pass
+
+_migrate_tokens()
+_build_token_map()
 _frontier_cfg     = _load_yaml("frontier.yaml",      {"enabled": False, "providers": {}})
 _routing_cfg      = _load_yaml("routing.yaml",        {"routes": []})
 _eviction_cfg     = _load_yaml("eviction.yaml",        {"eviction_timeout_min": 15, "vram_threshold_pct": 80, "never_evict": []})
@@ -1209,7 +1241,7 @@ def _get_token_name(request: Request) -> str:
         if not auth.lower().startswith("bearer "):
             raise HTTPException(status_code=401, detail={"error": "invalid Authorization header"})
         token = auth[7:].strip()
-        token_name = _tokens_cfg.get("tokens", {}).get(token)
+        token_name = _token_map.get(token)
         if not token_name:
             raise HTTPException(status_code=401, detail={"error": "invalid token"})
         return token_name
@@ -2188,25 +2220,8 @@ async def set_clients_config(request: Request):
         _client_cfg = data
         with open(CONFIG_DIR / "clients.yaml", "w") as f:
             yaml.safe_dump(_client_cfg, f)
+        _build_token_map()
         return {"ok": True, "config": _client_cfg}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-@app.get("/admin/tokens")
-async def get_tokens_config(request: Request):
-    _check_admin(request)
-    return _tokens_cfg
-
-@app.post("/admin/tokens")
-async def set_tokens_config(request: Request):
-    _check_admin(request)
-    global _tokens_cfg
-    try:
-        data = await request.json()
-        _tokens_cfg = data
-        with open(CONFIG_DIR / "tokens.yaml", "w") as f:
-            yaml.safe_dump(_tokens_cfg, f)
-        return {"ok": True, "config": {"tokens": list(_tokens_cfg.get("tokens", {}).values())}}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

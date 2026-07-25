@@ -4,7 +4,6 @@
 {% block content %}
 <div class="flex gap-4 mb-6 border-b border-[#313244] pb-2">
     <button class="nav-link tab-btn active" data-target="clients-tab">👥 Clients</button>
-    <button class="nav-link tab-btn" data-target="tokens-tab">🔑 Tokens</button>
     <button class="nav-link tab-btn" data-target="frontier-tab">🌐 Frontier LLMs</button>
     <button class="nav-link tab-btn" data-target="fallback-tab">🔀 Fallback</button>
     <button class="nav-link tab-btn" data-target="settings-tab">⚙️ Settings</button>
@@ -23,6 +22,7 @@
             <thead>
                 <tr>
                     <th>IP / Client</th>
+                    <th>API Token</th>
                     <th>Tokens Used (Today)</th>
                     <th>Daily Limits (Local | Frontier)</th>
                     <th>Allowed Models</th>
@@ -37,34 +37,6 @@
     </div>
 </div>
 
-<!-- Tokens Tab -->
-<div id="tokens-tab" class="tab-content hidden">
-    <div class="flex justify-between items-center mb-4">
-        <h2 class="text-xl font-bold text-[#b4befe]">Bearer Tokens</h2>
-        <button onclick="openTokenModal()" class="bg-[#89b4fa] text-[#1e1e2e] px-4 py-2 rounded font-bold hover:bg-[#b4befe] transition">
-            + Add Token
-        </button>
-    </div>
-    <p class="text-sm text-[#7f849c] mb-4">
-        Each client_id here must also exist in the Clients tab (budget/model-allowlist config) —
-        this tab only manages the Authorization: Bearer token that maps to it. Clients with no
-        token here fall back to IP-based identification.
-    </p>
-    <div class="card overflow-x-auto">
-        <table class="w-full text-left">
-            <thead>
-                <tr>
-                    <th>Client ID</th>
-                    <th>Token</th>
-                    <th>Actions</th>
-                </tr>
-            </thead>
-            <tbody id="tokens-tbody">
-                <tr><td colspan="3" class="text-center py-4 text-[#7f849c]">Loading tokens...</td></tr>
-            </tbody>
-        </table>
-    </div>
-</div>
 
 <!-- Frontier LLMs Tab -->
 <div id="frontier-tab" class="tab-content hidden">
@@ -274,32 +246,6 @@
     </div>
 </div>
 
-<!-- Token Modal -->
-<div id="token-modal" class="fixed inset-0 bg-black/50 z-[200] hidden flex justify-center items-center">
-    <div class="bg-[#1e1e2e] border border-[#45475a] rounded-lg p-6 w-[420px] shadow-xl">
-        <h3 id="token-modal-title" class="text-lg font-bold text-[#b4befe] mb-4">Add Token</h3>
-
-        <div class="mb-4">
-            <label class="block text-sm text-[#7f849c] mb-1">Client ID (must match a Clients-tab entry)</label>
-            <input type="text" id="token-client-id" class="w-full bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4]">
-        </div>
-
-        <div class="mb-4">
-            <label class="block text-sm text-[#7f849c] mb-1">Token</label>
-            <div class="flex gap-2">
-                <input type="text" id="token-value" readonly class="flex-1 bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4] font-mono text-sm">
-                <button onclick="copyTokenValue()" class="px-3 rounded bg-[#313244] hover:bg-[#45475a] text-white text-sm">Copy</button>
-            </div>
-            <p class="text-xs text-[#7f849c] mt-1">Generated client-side; only stored once you hit Save.</p>
-        </div>
-
-        <div class="flex justify-end gap-2">
-            <button onclick="closeTokenModal()" class="px-4 py-2 rounded bg-[#313244] hover:bg-[#45475a] text-white">Cancel</button>
-            <button onclick="regenerateTokenValue()" class="px-4 py-2 rounded bg-[#45475a] hover:bg-[#585b70] text-white">Regenerate</button>
-            <button onclick="saveToken()" class="px-4 py-2 rounded bg-[#89b4fa] hover:bg-[#b4befe] text-[#1e1e2e] font-bold">Save</button>
-        </div>
-    </div>
-</div>
 
 {% endblock %}
 
@@ -313,7 +259,7 @@ let frontierModels = [];
 
 async function initAdmin() {
     await fetchClients();
-    await fetchTokens();
+    await fetchClients();
     await fetchFrontier();
     await fetchLoggingConfig();
     await fetchModels();
@@ -374,8 +320,18 @@ function renderClientsTable(clients, usage) {
         const frontierBadge = cfg.frontier_allowed ? '<span class="badge-ok text-xs ml-2">Frontier</span>' : '';
         const statusHTML = cfg.blocked ? '<span class="badge-gaming">Blocked</span>' : '<span class="badge-ok">Active</span>';
         
+        
+        let tokenHTML = '<span class="text-xs text-[#7f849c]">IP-based (No token)</span><br><button onclick="generateTokenForClient(\\'' + ip + '\\')" class="text-xs text-[#89b4fa] hover:underline mt-1">Generate</button>';
+        if (cfg.token) {
+            tokenHTML = '<div class="flex items-center gap-2"><span class="font-mono text-sm text-[#7f849c]" title="Click to copy" onclick="copyExistingToken(\\'' + escHtml(cfg.token) + '\\')" style="cursor:pointer">' + escHtml(cfg.token.slice(0, 8)) + '…' + escHtml(cfg.token.slice(-4)) + '</span></div>' +
+                        '<div class="mt-1 flex gap-2"><button onclick="copyExistingToken(\\'' + escHtml(cfg.token) + '\\')" class="text-xs text-[#a6e3a1] hover:underline">Copy</button>' +
+                        '<button onclick="generateTokenForClient(\\'' + ip + '\\')" class="text-xs text-[#89b4fa] hover:underline">Rotate</button>' +
+                        '<button onclick="revokeTokenForClient(\\'' + ip + '\\')" class="text-xs text-[#f38ba8] hover:underline">Revoke</button></div>';
+        }
+        
         html += `<tr>
             <td class="font-bold">${escHtml(ip)}${frontierBadge}</td>
+            <td>${tokenHTML}</td>
             <td>${usedHTML}</td>
             <td>${limitStr}</td>
             <td><div class="truncate max-w-[200px]" title="${escHtml(modelsStr)}">${escHtml(modelsStr)}</div></td>
@@ -511,10 +467,6 @@ async function deleteClient(ip) {
     } catch(e) {}
 }
 
-// Tokens
-let tokensData = {}; // token -> client_id, as stored/returned by the API
-let tokenModalOriginalClientId = null; // client_id being edited, if any (null = adding new)
-
 function genToken() {
     const bytes = new Uint8Array(32);
     crypto.getRandomValues(bytes);
@@ -522,107 +474,34 @@ function genToken() {
     return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-async function fetchTokens() {
-    try {
-        const res = await fetch('/api/admin/tokens');
-        const data = await res.json();
-        tokensData = data.tokens || {};
-        renderTokensTable();
-    } catch(e) {
-        console.error("Failed to load tokens", e);
-    }
-}
-
-function renderTokensTable() {
-    const tbody = document.getElementById('tokens-tbody');
-    let html = '';
-    for (const [token, clientId] of Object.entries(tokensData)) {
-        html += `<tr>
-            <td class="font-bold">${escHtml(clientId)}</td>
-            <td><span class="font-mono text-sm text-[#7f849c]">${escHtml(token.slice(0, 8))}…${escHtml(token.slice(-4))}</span></td>
-            <td>
-                <button data-action="copy" data-token="${escHtml(token)}" class="text-[#a6e3a1] hover:underline mr-2">Copy</button>
-                <button data-action="regen" data-cid="${escHtml(clientId)}" class="text-[#89b4fa] hover:underline mr-2">Regenerate</button>
-                <button data-action="delete" data-cid="${escHtml(clientId)}" class="text-[#f38ba8] hover:underline">Delete</button>
-            </td>
-        </tr>`;
-    }
-    tbody.innerHTML = html || '<tr><td colspan="3" class="text-center py-4">No tokens configured — clients fall back to IP-based identification</td></tr>';
-
-    // Wired via data attributes + real DOM values (not string-interpolated onclick=)
-    // so a client_id/token containing a quote can't break out of a JS-string context.
-    tbody.querySelectorAll('button[data-action]').forEach(btn => {
-        const action = btn.dataset.action;
-        if (action === 'copy') btn.onclick = () => copyExistingToken(btn.dataset.token);
-        else if (action === 'regen') btn.onclick = () => openTokenModal(btn.dataset.cid);
-        else if (action === 'delete') btn.onclick = () => deleteToken(btn.dataset.cid);
-    });
-}
-
-function openTokenModal(clientId = null) {
-    tokenModalOriginalClientId = clientId;
-    document.getElementById('token-modal-title').innerText = clientId ? `Regenerate Token — ${clientId}` : 'Add Token';
-    document.getElementById('token-client-id').value = clientId || '';
-    document.getElementById('token-client-id').disabled = !!clientId;
-    document.getElementById('token-value').value = genToken();
-    document.getElementById('token-modal').classList.remove('hidden');
-}
-
-function closeTokenModal() {
-    document.getElementById('token-modal').classList.add('hidden');
-}
-
-function regenerateTokenValue() {
-    document.getElementById('token-value').value = genToken();
-}
-
-function copyTokenValue() {
-    const val = document.getElementById('token-value').value;
-    navigator.clipboard.writeText(val).catch(() => {});
-}
-
 function copyExistingToken(token) {
     navigator.clipboard.writeText(token).catch(() => {});
 }
 
-async function saveToken() {
-    const clientId = document.getElementById('token-client-id').value.trim();
-    if (!clientId) return alert("Client ID cannot be empty");
-    const newToken = document.getElementById('token-value').value;
-
-    // Regenerating: drop the old token for this client_id first.
-    for (const [tok, cid] of Object.entries(tokensData)) {
-        if (cid === clientId) delete tokensData[tok];
-    }
-    tokensData[newToken] = clientId;
-
+async function generateTokenForClient(clientId) {
+    if (clientsData[clientId].token && !confirm(`Rotate token for ${clientId}? The old token will stop working immediately.`)) return;
+    clientsData[clientId].token = genToken();
     try {
-        const res = await fetch('/api/admin/tokens', {
+        const res = await fetch('/api/admin/clients', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({tokens: tokensData})
+            body: JSON.stringify({clients: clientsData})
         });
-        if (res.ok) {
-            closeTokenModal();
-            fetchTokens();
-        } else alert("Failed to save token");
-    } catch(e) {
-        alert("Error saving token");
-    }
+        if (res.ok) fetchClients();
+        else alert("Failed to save token");
+    } catch(e) { alert("Error saving token"); }
 }
 
-async function deleteToken(clientId) {
-    if (!confirm(`Delete token for ${clientId}? That client will fall back to IP-based identification.`)) return;
-    for (const [tok, cid] of Object.entries(tokensData)) {
-        if (cid === clientId) delete tokensData[tok];
-    }
+async function revokeTokenForClient(clientId) {
+    if (!confirm(`Revoke token for ${clientId}? They will fall back to IP-based authentication.`)) return;
+    delete clientsData[clientId].token;
     try {
-        const res = await fetch('/api/admin/tokens', {
+        const res = await fetch('/api/admin/clients', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({tokens: tokensData})
+            body: JSON.stringify({clients: clientsData})
         });
-        if (res.ok) fetchTokens();
+        if (res.ok) fetchClients();
     } catch(e) {}
 }
 
