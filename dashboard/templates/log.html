@@ -211,13 +211,14 @@ function renderTable(rows) {
   rows.forEach(r => {
     const tr = document.createElement('tr');
     tr.className = "border-b border-[#313244] hover:bg-[#181825] cursor-pointer group";
+    tr.title = "Klicken für Prompt & Response";
     tr.onclick = (e) => {
        if(!e.target.closest('button')) toggleDetails(r.id);
     };
     
     const timeParts = (r.ts || '').split('T');
     const timePart = timeParts.length > 1 ? timeParts[1].substring(0,8) : (r.ts||'').substring(0,8);
-    const tsHtml = `<span class="text-[#cdd6f4]">${r.date||''}</span><br><span class="text-[#7f849c] text-[10px]">${timePart}</span>`;
+    const tsHtml = `<span id="chev_${r.id}" class="inline-block text-[#7f849c] transition-transform mr-1">▸</span><span class="text-[#cdd6f4]">${r.date||''}</span><br><span class="text-[#7f849c] text-[10px] ml-3">${timePart}</span>`;
     
     const clientName = r.token_name || r.client_ip || '—';
     const hostHtml = (r.hostname && r.hostname !== r.client_ip) ? `<br><span class="text-[#7f849c] text-[10px]">${r.hostname}</span>` : '';
@@ -276,6 +277,8 @@ function renderTable(rows) {
 
 function toggleDetails(id) {
   const el = document.getElementById(`det_${id}`);
+  const chev = document.getElementById(`chev_${id}`);
+  if (chev) chev.classList.toggle('rotate-90');
   if (el) el.classList.toggle('hidden');
 }
 
