@@ -2,32 +2,36 @@
 {% block title %}LLM Monitor — Setup & Überblick{% endblock %}
 
 {% block content %}
-<div class="max-w-3xl mx-auto space-y-6">
+<div class="w-[80%] mx-auto space-y-6">
 
   <div>
-    <h1 class="text-2xl font-bold text-[#b4befe] mb-1">LLM Monitor & llmproxy — Überblick</h1>
-    <p class="text-[#7f849c] text-sm">Alles was du wissen musst: Architektur, Monitor-App, Installation.</p>
+    <h1 class="text-2xl font-bold text-[#b4befe] mb-1">llmproxy — Setup &amp; Überblick</h1>
+    <p class="text-[#7f849c] text-sm">Architektur, Client-Einrichtung, Monitor-App, Bearer-Auth &amp; Konfiguration.</p>
   </div>
 
   <!-- ── Architektur ─────────────────────────────────────────────────────────── -->
   <div class="card">
     <div class="text-sm font-semibold text-[#cdd6f4] mb-3">🏗 Wie das zusammenhängt</div>
-    <div class="rounded p-3 text-xs font-mono leading-relaxed mb-3 overflow-x-auto whitespace-pre" style="background:#181825;color:#cdd6f4;line-height:1.6">Dein Rechner / Roo Cline / Open WebUI
+    <div class="rounded p-3 text-xs font-mono leading-relaxed mb-3 overflow-x-auto whitespace-pre" style="background:#181825;color:#cdd6f4;line-height:1.6">Dein Rechner / Roo Cline / Open WebUI / App
          |
+         |  Authorization: Bearer &lt;token&gt;   (optional, für named clients)
          |  :11435  &lt;-- immer dieser Port, nie :11434 direkt!
          v
-  +--------------------------------------------+
-  |  llmproxy  (<proxy-host>, systemd)                 |
-  |  - Logging aller Anfragen (SQLite)         |
-  |  - Gaming-Mode-Sperre                      |
-  |  - Inference-Budget pro Client             |
-  |  - Idle Model Eviction                     |
-  |  - /status/stream  (SSE live feed)         |
-  +--------------------------------------------+
+  +------------------------------------------------------------+
+  |  llmproxy  (&lt;proxy-host&gt;, systemd)                        |
+  |  - Bearer-Token-Auth (clients.yaml)                       |
+  |  - Logging (SQLite), Budgets pro Client                   |
+  |  - Guardrails / DLP / Fail2Ban                            |
+  |  - Gaming-Mode &amp; Ollama-Lock (GPU für ComfyUI frei)       |
+  |  - Frontier-Proxy (externe OpenAI-kompatible APIs)        |
+  |  - Auto-Fallback (Ollama down → Frontier)                 |
+  |  - Idle Model Eviction                                    |
+  |  - /status/stream  (SSE live feed)                        |
+  +------------------------------------------------------------+
          |
-         |  :11434  (intern)
+         |  :11434 / :11438  (intern)
          v
-    Ollama  (lokal auf <gpu-host>)</div>
+    Ollama  (lokal auf &lt;gpu-host&gt;, 2x GPU)</div>
     <div class="rounded p-3 text-sm space-y-1" style="background:#181825">
       <div class="flex gap-2 items-start">
         <span class="text-[#f38ba8] shrink-0">✗</span>
@@ -39,13 +43,67 @@
       </div>
     </div>
     <p class="text-xs text-[#585b70] mt-2">
-      Der Proxy leitet die Anfrage intern an Ollama weiter — für deine Clients ist er vollständig transparent.
-      Alle Ollama-kompatiblen Tools (Roo Cline, Open WebUI, llmbenchy, …) funktionieren ohne Anpassung,
-      du änderst nur die URL von <code>:11434</code> auf <code>:11435</code>.
+      Der Proxy ist für Ollama-kompatible Clients vollständig transparent — du änderst nur die URL von <code>:11434</code> auf <code>:11435</code>.
     </p>
   </div>
 
+  <!-- ── Bearer Auth / API Tokens ──────────────────────────────────────────── -->
+  <div class="card" style="border-color:#89b4fa33">
+    <div class="text-sm font-semibold text-[#89b4fa] mb-3">🔑 Bearer-Token-Authentifizierung</div>
+    <p class="text-sm text-[#7f849c] mb-3">
+      Jeder Client kann (optional) mit einem API-Token konfiguriert werden. Ohne Token wird der Client über seine IP-Adresse identifiziert.
+      Tokens werden direkt in <code class="text-[#89b4fa]">clients.yaml</code> gespeichert und im Dashboard unter <strong>Admin → Clients</strong> verwaltet.
+    </p>
+    <div class="grid grid-cols-2 gap-3 text-xs mb-3">
+      <div class="rounded p-3" style="background:#181825">
+        <div class="text-[#585b70] mb-2">Anfrage mit Token (named client)</div>
+        <code class="text-[#a6e3a1] block leading-relaxed">curl http://&lt;proxy-host&gt;:11435/v1/chat/completions \<br>&nbsp;&nbsp;-H "Authorization: Bearer &lt;dein-token&gt;" \<br>&nbsp;&nbsp;-d '{"model":"llama3.2","messages":[...]}'</code>
+      </div>
+      <div class="rounded p-3" style="background:#181825">
+        <div class="text-[#585b70] mb-2">Anfrage ohne Token (IP-basiert)</div>
+        <code class="text-[#a6e3a1] block leading-relaxed">curl http://&lt;proxy-host&gt;:11435/v1/chat/completions \<br>&nbsp;&nbsp;-d '{"model":"llama3.2","messages":[...]}'</code>
+        <div class="text-[#585b70] mt-2">→ Wird dem Default-Client oder der Sender-IP zugeordnet</div>
+      </div>
+    </div>
+    <p class="text-xs text-[#585b70]">
+      Token generieren: <strong>Admin → Clients</strong> → Zeile des Clients → <span class="text-[#89b4fa]">Generate</span>. Oder per CLI:
+      <code class="text-[#a6e3a1]">python3 scripts/generate_tokens.py</code>
+    </p>
+  </div>
+
+  <!-- ── Admin-Features ────────────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="text-sm font-semibold text-[#cdd6f4] mb-4">⚙️ Admin-Features im Überblick</div>
+    <div class="grid grid-cols-3 gap-4 text-sm">
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">👥</span>
+        <div><div class="font-medium text-[#cdd6f4]">Clients &amp; Budgets</div><div class="text-[#7f849c] text-xs mt-0.5">Bearer-Token, tägliches Token-Limit (lokal &amp; Frontier getrennt), erlaubte Modelle, Block-Status.</div></div>
+      </div>
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">🛡️</span>
+        <div><div class="font-medium text-[#cdd6f4]">Safeguards / Guardrails</div><div class="text-[#7f849c] text-xs mt-0.5">Prompt- &amp; Output-Filter (Keyword, Regex, DLP). Aktionen: Deny, Warn, Rewrite. Fail2Ban-Autosperre.</div></div>
+      </div>
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">🌐</span>
+        <div><div class="font-medium text-[#cdd6f4]">Frontier LLMs</div><div class="text-[#7f849c] text-xs mt-0.5">Externe OpenAI-kompatible Provider (Gemini, OpenRouter) als Fallback oder direkt.</div></div>
+      </div>
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">🔒</span>
+        <div><div class="font-medium text-[#cdd6f4]">Ollama-Lock</div><div class="text-[#7f849c] text-xs mt-0.5">Sperrt lokale GPU-Nutzung und entlädt Modelle. Automatisch bei laufender ComfyUI-Queue.</div></div>
+      </div>
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">🔀</span>
+        <div><div class="font-medium text-[#cdd6f4]">Auto-Fallback</div><div class="text-[#7f849c] text-xs mt-0.5">Ist Ollama nicht erreichbar → transparent auf Frontier-Modell umleiten.</div></div>
+      </div>
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">📋</span>
+        <div><div class="font-medium text-[#cdd6f4]">Admin-Audit-Log</div><div class="text-[#7f849c] text-xs mt-0.5">Alle Admin-Aktionen mit Zeitstempel, Quelle und IP protokolliert.</div></div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Autostart <proxy-host> ─────────────────────────────────────────────────────── -->
+
   <div class="card" style="border-color:#a6e3a133">
     <div class="text-sm font-semibold text-[#a6e3a1] mb-2">⚡ &lt;proxy-host&gt; fährt automatisch hoch</div>
     <p class="text-sm text-[#7f849c] mb-3">
