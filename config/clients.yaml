@@ -38,6 +38,11 @@ clients:
     limit: -1
     models: '*'
     token: ***REMOVED-TOKEN***
+  llmbenchy:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
   llmgui:
     blocked: false
     limit: 10000000
