@@ -1,29 +1,30 @@
 clients:
-  default:
-    blocked: false
-    limit: 10000000
-    models: '*'
-  pylibs:
-    blocked: false
-    limit: 10000000
-    models: '*'
-  testmanager:
-    blocked: false
-    limit: 10000000
-    models: '*'
-  cassandra:
-    blocked: false
-    limit: 10000000
-    models: '*'
-  comic-generator:
-    blocked: false
-    limit: 10000000
-    models: '*'
   baselinevulnboard:
     blocked: false
     limit: 10000000
     models: '*'
+    token: ***REMOVED-TOKEN***
+  cassandra:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
+  comic-generator:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
+  comicmakerng:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
   cyberpulse:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
+  default:
     blocked: false
     limit: 10000000
     models: '*'
@@ -31,35 +32,49 @@ clients:
     blocked: false
     limit: 10000000
     models: '*'
-  zscaler_bypass:
-    blocked: false
-    limit: 10000000
-    models: '*'
-  neurotracker:
-    blocked: false
-    limit: 10000000
-    models: '*'
-  storygen:
-    blocked: false
-    limit: 10000000
-    models: '*'
-  soc-panic:
-    blocked: false
-    limit: 10000000
-    models: '*'
-  yads-testing:
-    blocked: false
-    limit: 10000000
-    models: '*'
-  comicmakerng:
-    blocked: false
-    limit: 10000000
-    models: '*'
-  llmgui:
-    blocked: false
-    limit: 10000000
-    models: '*'
+    token: ***REMOVED-TOKEN***
   hermes:
     blocked: false
     limit: -1
     models: '*'
+    token: ***REMOVED-TOKEN***
+  llmgui:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
+  neurotracker:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
+  pylibs:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
+  soc-panic:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
+  storygen:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
+  testmanager:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
+  yads-testing:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
+  zscaler_bypass:
+    blocked: false
+    limit: 10000000
+    models: '*'
+    token: ***REMOVED-TOKEN***
