@@ -27,7 +27,7 @@ cp "$REPO_DIR/docker-compose.yml" "$INSTALL_DIR/docker-compose.yml"
 
 # Konfig-YAMLs flach nach INSTALL_DIR (CONFIG_DIR in llmproxy.py), nur wenn noch
 # nicht vorhanden (keine Überschreibung bestehender Live-Configs!)
-for f in clients.yaml frontier.yaml routing.yaml eviction.yaml notifications.yaml logging.yaml; do
+for f in clients.yaml tokens.yaml frontier.yaml fallback.yaml routing.yaml eviction.yaml notifications.yaml logging.yaml; do
     if [ -f "$REPO_DIR/config/$f" ] && [ ! -f "$INSTALL_DIR/$f" ]; then
         echo "→ Kopiere $f (neu) …"
         cp "$REPO_DIR/config/$f" "$INSTALL_DIR/$f"

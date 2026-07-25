@@ -4,6 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
+Environment=LLMPROXY_GPU_HOST=dana
 ExecStart=/usr/bin/python3 /opt/llmproxy/proxy/llmproxy.py
 WorkingDirectory=/opt/llmproxy/proxy
 Restart=on-failure

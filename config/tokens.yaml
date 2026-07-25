@@ -1,0 +1,5 @@
+tokens: {}
+# token_string: client_id
+# Populated at rollout time via `python3 scripts/generate_tokens.py` (or POST /admin/tokens).
+# Never commit real token values — this file stays empty in git; the live copy on the
+# proxy host (/opt/llmproxy/tokens.yaml) holds the real map.

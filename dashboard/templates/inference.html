@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}Inference — llmproxy{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-lg font-semibold text-[#b4befe]">Inference Stats</h1>
+  <div class="flex items-center gap-3 text-sm text-[#7f849c]">
+    <span>Fenster:</span>
+    <select id="window-select" class="bg-[#1e1e2e] border border-[#45475a] rounded px-2 py-1 text-[#cdd6f4] text-xs">
+      <option value="15">15 min</option>
+      <option value="60" selected>60 min</option>
+      <option value="360">6 h</option>
+      <option value="1440">24 h</option>
+    </select>
+    <span id="inf-update" class="text-xs text-[#585b70]">—</span>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3 text-sm">Tokens/s pro Request</h2>
+    <canvas id="chart-tps" height="160"></canvas>
+  </div>
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3 text-sm">Context-Länge (num_ctx)</h2>
+    <canvas id="chart-ctx" height="160"></canvas>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3 text-sm">Time to First Token (s)</h2>
+    <canvas id="chart-ttft" height="160"></canvas>
+  </div>
+  <div class="card">
+    <h2 class="font-semibold text-[#b4befe] mb-3 text-sm">Ø Werte pro Modell (im Fenster)</h2>
+    <div id="model-summary" class="text-sm space-y-2"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const MODEL_COLORS = ['#cba6f7', '#89dceb', '#a6e3a1', '#fab387', '#f38ba8', '#f9e2af', '#89b4fa', '#f5c2e7'];
+const colorForModel = (() => {
+  const assigned = {};
+  let next = 0;
+  return (model) => {
+    if (!(model in assigned)) assigned[model] = MODEL_COLORS[next++ % MODEL_COLORS.length];
+    return assigned[model];
+  };
+})();
+
+function makeChart(id, yLabel) {
+  return new Chart(document.getElementById(id), {
+    type: 'line',
+    data: { datasets: [] },
+    options: {
+      animation: false,
+      parsing: false,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#7f849c', font: { size: 11 }, boxWidth: 12 } },
+        tooltip: {
+          backgroundColor: '#1e1e2e', borderColor: '#45475a', borderWidth: 1,
+          titleColor: '#cdd6f4', bodyColor: '#7f849c',
+          callbacks: {
+            title: items => items[0] ? new Date(items[0].parsed.x).toLocaleTimeString('de-DE') : '',
+            label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2)}`
+          }
+        }
+      },
+      scales: {
+        x: { type: 'linear',
+             ticks: { color: '#585b70', font: { size: 10 }, maxTicksLimit: 8,
+                      callback: v => new Date(v).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) },
+             grid: { color: '#181825' } },
+        y: { title: { display: true, text: yLabel, color: '#585b70', font: { size: 10 } },
+             grid: { color: '#313244' }, ticks: { color: '#7f849c', font: { size: 10 } }, min: 0 }
+      }
+    }
+  });
+}
+
+const chartTps  = makeChart('chart-tps',  'tok/s');
+const chartCtx  = makeChart('chart-ctx',  'Tokens');
+const chartTtft = makeChart('chart-ttft', 'Sekunden');
+
+function datasetFor(chart, model) {
+  let ds = chart.data.datasets.find(d => d.label === model);
+  if (!ds) {
+    const color = colorForModel(model);
+    ds = { label: model, borderColor: color, backgroundColor: color + '18',
+           data: [], tension: 0.2, pointRadius: 2, pointHoverRadius: 4, fill: false, borderWidth: 1.5, showLine: false };
+    chart.data.datasets.push(ds);
+  }
+  return ds;
+}
+
+function fmtNum(v, digits = 1) { return (v == null) ? '—' : Number(v).toFixed(digits); }
+
+async function refresh() {
+  const minutes = document.getElementById('window-select').value;
+  let rows;
+  try {
+    const res = await fetch(`/api/stats/inference?minutes=${minutes}&limit=1000`);
+    rows = await res.json();
+  } catch (e) {
+    document.getElementById('inf-update').textContent = '⚠ Fehler beim Laden';
+    return;
+  }
+
+  [chartTps, chartCtx, chartTtft].forEach(c => c.data.datasets = []);
+
+  const perModel = {};
+  for (const r of rows) {
+    if (!r.model) continue;
+    const t = new Date(r.ts).getTime();
+    if (r.tokens_per_second != null) datasetFor(chartTps, r.model).data.push({ x: t, y: r.tokens_per_second });
+    if (r.num_ctx != null)           datasetFor(chartCtx, r.model).data.push({ x: t, y: r.num_ctx });
+    if (r.ttft_s != null)            datasetFor(chartTtft, r.model).data.push({ x: t, y: r.ttft_s });
+
+    (perModel[r.model] ??= []).push(r);
+  }
+  [chartTps, chartCtx, chartTtft].forEach(c => c.update('none'));
+
+  const summaryRows = Object.entries(perModel).map(([model, rs]) => {
+    const avg = (key) => {
+      const vals = rs.map(r => r[key]).filter(v => v != null);
+      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    };
+    return { model, n: rs.length, tps: avg('tokens_per_second'), ctx: avg('num_ctx'), ttft: avg('ttft_s') };
+  }).sort((a, b) => b.n - a.n);
+
+  document.getElementById('model-summary').innerHTML = summaryRows.length
+    ? summaryRows.map(s => `
+        <div class="flex justify-between items-center px-2 py-1.5 rounded" style="background:#181825">
+          <span style="color:${colorForModel(s.model)}" class="font-mono text-xs">${s.model}</span>
+          <span class="text-[#7f849c] text-xs">${s.n}x · ${fmtNum(s.tps)} tok/s · ctx ${fmtNum(s.ctx, 0)} · ttft ${fmtNum(s.ttft, 2)}s</span>
+        </div>`).join('')
+    : '<div class="text-[#585b70] text-xs">Keine Requests in diesem Fenster.</div>';
+
+  document.getElementById('inf-update').textContent = 'aktualisiert ' + new Date().toLocaleTimeString('de-DE');
+}
+
+document.getElementById('window-select').addEventListener('change', refresh);
+refresh();
+setInterval(refresh, 10000);
+</script>
+{% endblock %}

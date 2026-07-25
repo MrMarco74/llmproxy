@@ -10,8 +10,11 @@ services:
     volumes:
       - /root/.llmproxy.db:/data/llmproxy.db:ro
     environment:
-      - LLMPROXY_STATUS_URL=http://host.docker.internal:11435
+      - LLMPROXY_STATUS_URL=https://llmproxy.internal.familie-frischkorn.de:11435
       - DB_PATH=/data/llmproxy.db
+      # Set the real value on the host (e.g. via an env_file not committed to git),
+      # not here — must match _ADMIN_TOKEN's /opt/llmproxy/.admin_token on the proxy host.
+      - LLMPROXY_ADMIN_TOKEN=${LLMPROXY_ADMIN_TOKEN:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

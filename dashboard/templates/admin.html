@@ -4,7 +4,9 @@
 {% block content %}
 <div class="flex gap-4 mb-6 border-b border-[#313244] pb-2">
     <button class="nav-link tab-btn active" data-target="clients-tab">👥 Clients</button>
+    <button class="nav-link tab-btn" data-target="tokens-tab">🔑 Tokens</button>
     <button class="nav-link tab-btn" data-target="frontier-tab">🌐 Frontier LLMs</button>
+    <button class="nav-link tab-btn" data-target="fallback-tab">🔀 Fallback</button>
     <button class="nav-link tab-btn" data-target="settings-tab">⚙️ Settings</button>
 </div>
 
@@ -22,7 +24,7 @@
                 <tr>
                     <th>IP / Client</th>
                     <th>Tokens Used (Today)</th>
-                    <th>Daily Limit</th>
+                    <th>Daily Limits (Local | Frontier)</th>
                     <th>Allowed Models</th>
                     <th>Status</th>
                     <th>Actions</th>
@@ -30,6 +32,35 @@
             </thead>
             <tbody id="clients-tbody">
                 <tr><td colspan="6" class="text-center py-4 text-[#7f849c]">Loading clients...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Tokens Tab -->
+<div id="tokens-tab" class="tab-content hidden">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold text-[#b4befe]">Bearer Tokens</h2>
+        <button onclick="openTokenModal()" class="bg-[#89b4fa] text-[#1e1e2e] px-4 py-2 rounded font-bold hover:bg-[#b4befe] transition">
+            + Add Token
+        </button>
+    </div>
+    <p class="text-sm text-[#7f849c] mb-4">
+        Each client_id here must also exist in the Clients tab (budget/model-allowlist config) —
+        this tab only manages the Authorization: Bearer token that maps to it. Clients with no
+        token here fall back to IP-based identification.
+    </p>
+    <div class="card overflow-x-auto">
+        <table class="w-full text-left">
+            <thead>
+                <tr>
+                    <th>Client ID</th>
+                    <th>Token</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="tokens-tbody">
+                <tr><td colspan="3" class="text-center py-4 text-[#7f849c]">Loading tokens...</td></tr>
             </tbody>
         </table>
     </div>
@@ -59,6 +90,40 @@
     </div>
 </div>
 
+<!-- Fallback Tab -->
+<div id="fallback-tab" class="tab-content hidden">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-xl font-bold text-[#b4befe]">Ollama Fallback</h2>
+        <label class="flex items-center gap-2 cursor-pointer">
+            <span class="text-sm">Enable Auto-Fallback</span>
+            <input type="checkbox" id="fallback-enable" class="form-checkbox h-5 w-5 text-[#89b4fa]" onchange="toggleFallbackMaster(this.checked)">
+        </label>
+    </div>
+    <p class="text-sm text-[#7f849c] mb-4">
+        Leitet <code>/v1/chat/completions</code> automatisch auf ein Frontier-Modell um, wenn der
+        zuständige Ollama-Upstream nicht erreichbar ist. Greift nur für Clients mit
+        "Allow Frontier LLMs" (Clients-Tab) und nur wenn das lokale Modell unten einem
+        konfigurierten Frontier-Modell zugeordnet ist.
+    </p>
+
+    <div class="card">
+        <div class="flex justify-between items-center mb-3">
+            <h3 class="font-bold text-[#cdd6f4]">Modell-Zuordnung (lokal → Frontier)</h3>
+            <button onclick="addFallbackMapping()" class="text-[#89b4fa] text-sm hover:underline">+ Zuordnung hinzufügen</button>
+        </div>
+        <div id="fallback-mapping-container" class="space-y-2">
+            <!-- rows injected by JS -->
+        </div>
+        <p class="text-xs text-[#7f849c] mt-3" id="fallback-health-status"></p>
+    </div>
+
+    <div class="mt-6 flex justify-end">
+        <button onclick="saveFallbackConfig()" class="bg-[#a6e3a1] text-[#1e1e2e] px-4 py-2 rounded font-bold hover:bg-[#94e2d5] transition">
+            Save Fallback Config
+        </button>
+    </div>
+</div>
+
 <!-- Settings Tab -->
 <div id="settings-tab" class="tab-content hidden">
     <div class="flex justify-between items-center mb-4">
@@ -76,6 +141,71 @@
             </label>
         </div>
     </div>
+
+    <div class="card max-w-2xl mt-4">
+        <div class="flex justify-between items-center">
+            <div>
+                <h3 class="font-bold text-[#cdd6f4]">Local LLM (Ollama)</h3>
+                <p class="text-sm text-[#7f849c] mt-1">Test connection to the underlying local model engine.</p>
+            </div>
+            <div class="text-right">
+                <button onclick="testOllama(this)" class="bg-[#89b4fa] text-[#1e1e2e] px-4 py-2 rounded text-sm font-bold hover:bg-[#b4befe] transition">
+                    Test Connection
+                </button>
+                <div class="test-result text-xs mt-2 hidden text-right"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card max-w-2xl mt-4">
+        <div class="flex justify-between items-center">
+            <div>
+                <h3 class="font-bold text-[#cdd6f4]">🔒 Ollama-Lock (GPU freiräumen)</h3>
+                <p class="text-sm text-[#7f849c] mt-1">
+                    Sperrt den Zugriff auf lokale Ollama-Modelle und entlädt sie sofort aus dem VRAM
+                    &mdash; z.B. um beide GPUs exklusiv für ComfyUI freizuräumen. Clients mit
+                    Frontier-Fallback (fallback.yaml) werden dabei weiterhin bedient. Der Zustand
+                    übersteht einen Neustart des Proxys. Wird außerdem automatisch gesetzt,
+                    solange ComfyUIs Queue nicht leer ist &mdash; der Schalter hier überschreibt
+                    das jederzeit manuell.
+                </p>
+                <p class="text-xs mt-2" id="ollama-lock-status">Status wird geladen…</p>
+            </div>
+            <div class="text-right">
+                <button id="ollama-lock-btn" onclick="toggleOllamaLock()" class="px-4 py-2 rounded text-sm font-bold transition">
+                    …
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="card max-w-2xl mt-4">
+        <div class="flex justify-between items-center mb-2">
+            <h3 class="font-bold text-[#cdd6f4]">📋 Admin-Audit-Log</h3>
+            <button onclick="fetchAdminActions()" class="text-[#89b4fa] text-sm hover:underline">Aktualisieren</button>
+        </div>
+        <p class="text-sm text-[#7f849c] mb-3">
+            Wer/was hat wann Stop-All, Ollama-Lock, Evict-Models, Force-Purge, Logging oder
+            Gaming-Override ausgelöst. <code class="bg-[#313244] px-1 py-0.5 rounded">source=auto</code>
+            heißt: der ComfyUI-Queue-Poller, nicht ein Mensch.
+        </p>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+                <thead>
+                    <tr class="text-[#7f849c]">
+                        <th class="pr-4 pb-1">Zeit</th>
+                        <th class="pr-4 pb-1">Aktion</th>
+                        <th class="pr-4 pb-1">Quelle</th>
+                        <th class="pr-4 pb-1">Client</th>
+                        <th class="pb-1">Detail</th>
+                    </tr>
+                </thead>
+                <tbody id="admin-actions-tbody">
+                    <tr><td colspan="5" class="text-center py-3 text-[#7f849c]">Lädt…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
 </div>
 
 <!-- Client Modal -->
@@ -88,9 +218,15 @@
             <input type="text" id="client-ip" class="w-full bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4]">
         </div>
         
-        <div class="mb-4">
-            <label class="block text-sm text-[#7f849c] mb-1">Token Limit (-1 for limitless)</label>
-            <input type="number" id="client-limit" class="w-full bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4]">
+        <div class="mb-4 grid grid-cols-2 gap-2">
+            <div>
+                <label class="block text-sm text-[#7f849c] mb-1">Local Limit</label>
+                <input type="number" id="client-limit-local" class="w-full bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4]">
+            </div>
+            <div>
+                <label class="block text-sm text-[#7f849c] mb-1">Frontier Limit</label>
+                <input type="number" id="client-limit-frontier" class="w-full bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4]">
+            </div>
         </div>
         
         <div class="mb-4">
@@ -138,20 +274,52 @@
     </div>
 </div>
 
+<!-- Token Modal -->
+<div id="token-modal" class="fixed inset-0 bg-black/50 z-[200] hidden flex justify-center items-center">
+    <div class="bg-[#1e1e2e] border border-[#45475a] rounded-lg p-6 w-[420px] shadow-xl">
+        <h3 id="token-modal-title" class="text-lg font-bold text-[#b4befe] mb-4">Add Token</h3>
+
+        <div class="mb-4">
+            <label class="block text-sm text-[#7f849c] mb-1">Client ID (must match a Clients-tab entry)</label>
+            <input type="text" id="token-client-id" class="w-full bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4]">
+        </div>
+
+        <div class="mb-4">
+            <label class="block text-sm text-[#7f849c] mb-1">Token</label>
+            <div class="flex gap-2">
+                <input type="text" id="token-value" readonly class="flex-1 bg-[#11111b] border border-[#313244] rounded p-2 text-[#cdd6f4] font-mono text-sm">
+                <button onclick="copyTokenValue()" class="px-3 rounded bg-[#313244] hover:bg-[#45475a] text-white text-sm">Copy</button>
+            </div>
+            <p class="text-xs text-[#7f849c] mt-1">Generated client-side; only stored once you hit Save.</p>
+        </div>
+
+        <div class="flex justify-end gap-2">
+            <button onclick="closeTokenModal()" class="px-4 py-2 rounded bg-[#313244] hover:bg-[#45475a] text-white">Cancel</button>
+            <button onclick="regenerateTokenValue()" class="px-4 py-2 rounded bg-[#45475a] hover:bg-[#585b70] text-white">Regenerate</button>
+            <button onclick="saveToken()" class="px-4 py-2 rounded bg-[#89b4fa] hover:bg-[#b4befe] text-[#1e1e2e] font-bold">Save</button>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
 <script>
 let clientsData = {};
 let frontierData = {enabled: false, providers: {}};
+let fallbackData = {enabled: false, mapping: {}};
 let localModels = [];
 let frontierModels = [];
 
 async function initAdmin() {
     await fetchClients();
+    await fetchTokens();
     await fetchFrontier();
     await fetchLoggingConfig();
-    fetchModels();
+    await fetchModels();
+    await fetchFallback();
+    await fetchOllamaLockStatus();
+    await fetchAdminActions();
 }
 
 // Tab Switching
@@ -185,15 +353,30 @@ function renderClientsTable(clients, usage) {
     const tbody = document.getElementById('clients-tbody');
     let html = '';
     for (const [ip, cfg] of Object.entries(clients)) {
-        const used = usage[ip] || 0;
-        const limitStr = cfg.limit === -1 ? 'Limitless' : fmt(cfg.limit);
+        const usageData = usage[ip] || {used: 0, used_local: 0, used_frontier: 0};
+        const limL = cfg.limit_local !== undefined ? cfg.limit_local : (cfg.limit || -1);
+        const limF = cfg.limit_frontier !== undefined ? cfg.limit_frontier : 1000000;
+        const limLStr = limL === -1 ? '∞' : fmt(limL);
+        const limFStr = limF === -1 ? '∞' : fmt(limF);
+        const pctL = limL > 0 ? Math.min(100, (usageData.used_local / limL) * 100).toFixed(1) : 0;
+        const pctF = limF > 0 ? Math.min(100, (usageData.used_frontier / limF) * 100).toFixed(1) : 0;
+        
+        const usedHTML = `
+            <div class="text-xs">
+                <div><span class="text-[#a6e3a1]">Lokal:</span> ${fmt(usageData.used_local)}</div>
+                <div class="w-full bg-[#313244] h-1.5 rounded-full mt-1 mb-2"><div class="bg-[#a6e3a1] h-1.5 rounded-full" style="width: ${pctL}%"></div></div>
+                <div><span class="text-[#f9e2af]">Frontier:</span> ${fmt(usageData.used_frontier)}</div>
+                <div class="w-full bg-[#313244] h-1.5 rounded-full mt-1"><div class="bg-[#f9e2af] h-1.5 rounded-full" style="width: ${pctF}%"></div></div>
+            </div>
+        `;
+        const limitStr = `<span class="text-[#a6e3a1]">${limLStr}</span> | <span class="text-[#f9e2af]">${limFStr}</span>`;
         const modelsStr = Array.isArray(cfg.models) ? cfg.models.join(', ') : cfg.models;
         const frontierBadge = cfg.frontier_allowed ? '<span class="badge-ok text-xs ml-2">Frontier</span>' : '';
         const statusHTML = cfg.blocked ? '<span class="badge-gaming">Blocked</span>' : '<span class="badge-ok">Active</span>';
         
         html += `<tr>
             <td class="font-bold">${escHtml(ip)}${frontierBadge}</td>
-            <td>${fmt(used)}</td>
+            <td>${usedHTML}</td>
             <td>${limitStr}</td>
             <td><div class="truncate max-w-[200px]" title="${escHtml(modelsStr)}">${escHtml(modelsStr)}</div></td>
             <td>${statusHTML}</td>
@@ -216,7 +399,8 @@ function openClientModal(ip = '') {
     if (ip && clientsData[ip]) {
         document.getElementById('client-ip').value = ip;
         document.getElementById('client-ip').disabled = true; // prevent changing IP when editing
-        document.getElementById('client-limit').value = clientsData[ip].limit;
+        document.getElementById('client-limit-local').value = clientsData[ip].limit_local !== undefined ? clientsData[ip].limit_local : (clientsData[ip].limit || -1);
+        document.getElementById('client-limit-frontier').value = clientsData[ip].limit_frontier !== undefined ? clientsData[ip].limit_frontier : 1000000;
         
         const models = clientsData[ip].models;
         const modelsStr = Array.isArray(models) ? models.join(', ') : models;
@@ -258,7 +442,8 @@ function openClientModal(ip = '') {
     } else {
         document.getElementById('client-ip').value = '';
         document.getElementById('client-ip').disabled = false;
-        document.getElementById('client-limit').value = '5000000';
+        document.getElementById('client-limit-local').value = '-1';
+        document.getElementById('client-limit-frontier').value = '1000000';
         
         document.getElementById('client-models-text').value = '*';
         document.getElementById('client-models-all').checked = true;
@@ -285,7 +470,8 @@ async function saveClient() {
     const ip = document.getElementById('client-ip').value.trim();
     if(!ip) return alert("IP cannot be empty");
     
-    const limit = parseInt(document.getElementById('client-limit').value) || -1;
+    const limit_local = parseInt(document.getElementById('client-limit-local').value) || -1;
+    const limit_frontier = parseInt(document.getElementById('client-limit-frontier').value) || 1000000;
     
     const modelsRaw = document.getElementById('client-models-text').value.trim();
     const models = modelsRaw === '*' ? '*' : modelsRaw.split(',').map(s=>s.trim()).filter(s=>s);
@@ -295,7 +481,7 @@ async function saveClient() {
     const fModelsRaw = document.getElementById('client-frontier-text').value.trim();
     const frontierModels = fModelsRaw === '*' ? '*' : fModelsRaw.split(',').map(s=>s.trim()).filter(s=>s);
     
-    clientsData[ip] = { limit, models, blocked, frontier_allowed: frontierAllowed, frontier_models: frontierModels };
+    clientsData[ip] = { limit_local, limit_frontier, models, blocked, frontier_allowed: frontierAllowed, frontier_models: frontierModels };
     
     try {
         const res = await fetch('/api/admin/clients', {
@@ -322,6 +508,121 @@ async function deleteClient(ip) {
             body: JSON.stringify({clients: clientsData})
         });
         if(res.ok) fetchClients();
+    } catch(e) {}
+}
+
+// Tokens
+let tokensData = {}; // token -> client_id, as stored/returned by the API
+let tokenModalOriginalClientId = null; // client_id being edited, if any (null = adding new)
+
+function genToken() {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    let b64 = btoa(String.fromCharCode(...bytes));
+    return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function fetchTokens() {
+    try {
+        const res = await fetch('/api/admin/tokens');
+        const data = await res.json();
+        tokensData = data.tokens || {};
+        renderTokensTable();
+    } catch(e) {
+        console.error("Failed to load tokens", e);
+    }
+}
+
+function renderTokensTable() {
+    const tbody = document.getElementById('tokens-tbody');
+    let html = '';
+    for (const [token, clientId] of Object.entries(tokensData)) {
+        html += `<tr>
+            <td class="font-bold">${escHtml(clientId)}</td>
+            <td><span class="font-mono text-sm text-[#7f849c]">${escHtml(token.slice(0, 8))}…${escHtml(token.slice(-4))}</span></td>
+            <td>
+                <button data-action="copy" data-token="${escHtml(token)}" class="text-[#a6e3a1] hover:underline mr-2">Copy</button>
+                <button data-action="regen" data-cid="${escHtml(clientId)}" class="text-[#89b4fa] hover:underline mr-2">Regenerate</button>
+                <button data-action="delete" data-cid="${escHtml(clientId)}" class="text-[#f38ba8] hover:underline">Delete</button>
+            </td>
+        </tr>`;
+    }
+    tbody.innerHTML = html || '<tr><td colspan="3" class="text-center py-4">No tokens configured — clients fall back to IP-based identification</td></tr>';
+
+    // Wired via data attributes + real DOM values (not string-interpolated onclick=)
+    // so a client_id/token containing a quote can't break out of a JS-string context.
+    tbody.querySelectorAll('button[data-action]').forEach(btn => {
+        const action = btn.dataset.action;
+        if (action === 'copy') btn.onclick = () => copyExistingToken(btn.dataset.token);
+        else if (action === 'regen') btn.onclick = () => openTokenModal(btn.dataset.cid);
+        else if (action === 'delete') btn.onclick = () => deleteToken(btn.dataset.cid);
+    });
+}
+
+function openTokenModal(clientId = null) {
+    tokenModalOriginalClientId = clientId;
+    document.getElementById('token-modal-title').innerText = clientId ? `Regenerate Token — ${clientId}` : 'Add Token';
+    document.getElementById('token-client-id').value = clientId || '';
+    document.getElementById('token-client-id').disabled = !!clientId;
+    document.getElementById('token-value').value = genToken();
+    document.getElementById('token-modal').classList.remove('hidden');
+}
+
+function closeTokenModal() {
+    document.getElementById('token-modal').classList.add('hidden');
+}
+
+function regenerateTokenValue() {
+    document.getElementById('token-value').value = genToken();
+}
+
+function copyTokenValue() {
+    const val = document.getElementById('token-value').value;
+    navigator.clipboard.writeText(val).catch(() => {});
+}
+
+function copyExistingToken(token) {
+    navigator.clipboard.writeText(token).catch(() => {});
+}
+
+async function saveToken() {
+    const clientId = document.getElementById('token-client-id').value.trim();
+    if (!clientId) return alert("Client ID cannot be empty");
+    const newToken = document.getElementById('token-value').value;
+
+    // Regenerating: drop the old token for this client_id first.
+    for (const [tok, cid] of Object.entries(tokensData)) {
+        if (cid === clientId) delete tokensData[tok];
+    }
+    tokensData[newToken] = clientId;
+
+    try {
+        const res = await fetch('/api/admin/tokens', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tokens: tokensData})
+        });
+        if (res.ok) {
+            closeTokenModal();
+            fetchTokens();
+        } else alert("Failed to save token");
+    } catch(e) {
+        alert("Error saving token");
+    }
+}
+
+async function deleteToken(clientId) {
+    if (!confirm(`Delete token for ${clientId}? That client will fall back to IP-based identification.`)) return;
+    for (const [tok, cid] of Object.entries(tokensData)) {
+        if (cid === clientId) delete tokensData[tok];
+    }
+    try {
+        const res = await fetch('/api/admin/tokens', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tokens: tokensData})
+        });
+        if (res.ok) fetchTokens();
     } catch(e) {}
 }
 
@@ -476,12 +777,21 @@ function renderFrontierProviders() {
                 </div>
                 <div>
                     <label class="block text-xs text-[#7f849c] mb-1">API Key</label>
-                    <input type="password" class="prov-key w-full bg-[#11111b] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4]" value="${escHtml(config.api_key || '')}" placeholder="sk-...">
+                    <input type="password" class="prov-key w-full bg-[#11111b] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4]" value="${escHtml(config.api_key || '')}" placeholder="AIza... / sk-...">
                 </div>
             </div>
             <div>
-                <label class="block text-xs text-[#7f849c] mb-1">Served Models (comma separated)</label>
+                <div class="flex justify-between items-end mb-1">
+                    <label class="block text-xs text-[#7f849c]">Served Models (comma separated)</label>
+                    <button onclick="openModelBrowser(this)" class="text-[#89b4fa] text-xs hover:underline">Browse Models</button>
+                </div>
                 <input type="text" class="prov-models w-full bg-[#11111b] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4]" value="${escHtml(modelsStr)}" placeholder="gpt-4o, gpt-3.5-turbo">
+            </div>
+            <div class="mt-3 text-right">
+                <button onclick="testFrontierProvider(this)" class="bg-[#89b4fa] text-[#1e1e2e] px-3 py-1 rounded text-xs font-bold hover:bg-[#b4befe] transition">
+                    Test API Connection
+                </button>
+                <div class="test-result text-xs mt-1 hidden"></div>
             </div>
         </div>`;
     }
@@ -538,6 +848,101 @@ async function saveFrontierConfig() {
     }
 }
 
+// Fallback Logic
+async function fetchFallback() {
+    try {
+        const r = await fetch('/api/admin/fallback');
+        fallbackData = await r.json();
+        if(!fallbackData.mapping) fallbackData.mapping = {};
+
+        document.getElementById('fallback-enable').checked = fallbackData.enabled || false;
+        renderFallbackMapping();
+
+        const health = fallbackData.ollama_healthy || {};
+        const parts = Object.entries(health).map(([idx, ok]) => `GPU ${idx}: ${ok ? '🟢 healthy' : '🔴 down'}`);
+        document.getElementById('fallback-health-status').textContent = parts.length ? `Live-Status: ${parts.join(' · ')}` : '';
+    } catch(e) {
+        console.error("Failed to load fallback config", e);
+    }
+}
+
+function fallbackOptionsHtml(options, selected, placeholder) {
+    let html = placeholder ? `<option value="">${escHtml(placeholder)}</option>` : '';
+    if(selected && selected !== '*' && !options.includes(selected)) {
+        html += `<option value="${escHtml(selected)}" selected>${escHtml(selected)} (nicht mehr gelistet)</option>`;
+    }
+    options.forEach(m => {
+        html += `<option value="${escHtml(m)}" ${m === selected ? 'selected' : ''}>${escHtml(m)}</option>`;
+    });
+    return html;
+}
+
+// Lokale Modell-Auswahl bekommt zusätzlich einen "*"-Catchall (greift für jedes
+// Modell ohne eigenen Mapping-Eintrag, siehe _get_fallback_frontier() im Proxy).
+function fallbackLocalOptionsHtml(selected, placeholder) {
+    const star = `<option value="*" ${selected === '*' ? 'selected' : ''}>* (alle lokalen Modelle ohne eigenen Eintrag)</option>`;
+    return star + fallbackOptionsHtml(localModels, selected, placeholder);
+}
+
+function renderFallbackMapping() {
+    const container = document.getElementById('fallback-mapping-container');
+    const entries = Object.entries(fallbackData.mapping);
+    if(!entries.length) {
+        container.innerHTML = '<div class="text-[#7f849c] text-sm">Keine Zuordnung konfiguriert.</div>';
+        return;
+    }
+    container.innerHTML = entries.map(([local, frontier]) => `
+        <div class="flex items-center gap-2 fallback-row">
+            <select class="fb-local flex-1 bg-[#11111b] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4]">${fallbackLocalOptionsHtml(local)}</select>
+            <span class="text-[#7f849c]">→</span>
+            <select class="fb-frontier flex-1 bg-[#11111b] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4]">${fallbackOptionsHtml(frontierModels, frontier)}</select>
+            <button onclick="this.closest('.fallback-row').remove()" class="text-[#f38ba8] text-sm hover:underline">Remove</button>
+        </div>`).join('');
+}
+
+function addFallbackMapping() {
+    const container = document.getElementById('fallback-mapping-container');
+    if(!Object.keys(fallbackData.mapping).length) container.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2 fallback-row';
+    row.innerHTML = `
+        <select class="fb-local flex-1 bg-[#11111b] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4]">${fallbackLocalOptionsHtml('', '-- lokales Modell --')}</select>
+        <span class="text-[#7f849c]">→</span>
+        <select class="fb-frontier flex-1 bg-[#11111b] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4]">${fallbackOptionsHtml(frontierModels, '', '-- Frontier-Modell --')}</select>
+        <button onclick="this.closest('.fallback-row').remove()" class="text-[#f38ba8] text-sm hover:underline">Remove</button>`;
+    container.appendChild(row);
+}
+
+function toggleFallbackMaster(enabled) {
+    fallbackData.enabled = enabled;
+}
+
+async function saveFallbackConfig() {
+    fallbackData.enabled = document.getElementById('fallback-enable').checked;
+    const mapping = {};
+    document.querySelectorAll('.fallback-row').forEach(row => {
+        const local = row.querySelector('.fb-local').value.trim();
+        const frontier = row.querySelector('.fb-frontier').value.trim();
+        if(local && frontier) mapping[local] = frontier;
+    });
+    fallbackData.mapping = mapping;
+
+    try {
+        const res = await fetch('/api/admin/fallback', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: fallbackData.enabled, mapping: fallbackData.mapping})
+        });
+        if(res.ok) {
+            alert("Fallback config saved!");
+        } else {
+            alert("Failed to save fallback config");
+        }
+    } catch(e) {
+        alert("Error saving fallback config");
+    }
+}
+
 // Logging Logic
 async function fetchLoggingConfig() {
     try {
@@ -563,7 +968,272 @@ async function toggleLogging(enabled) {
     }
 }
 
+// Ollama-Lock Logic
+function renderOllamaLockState(locked, auto) {
+    const statusEl = document.getElementById('ollama-lock-status');
+    const btn = document.getElementById('ollama-lock-btn');
+    if (locked) {
+        statusEl.textContent = auto
+            ? '🔒 Gesperrt (automatisch, ComfyUI-Queue aktiv) — lokale Ollama-Modelle sind nicht erreichbar.'
+            : '🔒 Gesperrt (manuell) — lokale Ollama-Modelle sind nicht erreichbar.';
+        statusEl.className = 'text-xs mt-2 text-[#f38ba8]';
+        btn.textContent = 'Entsperren';
+        btn.className = 'bg-[#a6e3a1] text-[#1e1e2e] px-4 py-2 rounded text-sm font-bold hover:bg-[#94e2d5] transition';
+    } else {
+        statusEl.textContent = '🔓 Frei — lokale Ollama-Modelle sind erreichbar.';
+        statusEl.className = 'text-xs mt-2 text-[#a6e3a1]';
+        btn.textContent = 'GPUs für ComfyUI sperren';
+        btn.className = 'bg-[#f38ba8] text-[#1e1e2e] px-4 py-2 rounded text-sm font-bold hover:bg-[#eba0ac] transition';
+    }
+}
+
+async function fetchOllamaLockStatus() {
+    try {
+        const r = await fetch('/api/proxy/health');
+        const data = await r.json();
+        renderOllamaLockState(!!data.ollama_locked, !!data.ollama_lock_auto);
+    } catch(e) {
+        console.error("Failed to load ollama-lock status", e);
+        document.getElementById('ollama-lock-status').textContent = 'Status nicht verfügbar.';
+    }
+}
+
+async function toggleOllamaLock() {
+    const btn = document.getElementById('ollama-lock-btn');
+    const currentlyLocked = btn.textContent.trim() === 'Entsperren';
+    const path = currentlyLocked ? 'ollama-unlock' : 'ollama-lock';
+    btn.disabled = true;
+    try {
+        const r = await fetch(`/api/proxy/maintenance/${path}`, {method: 'POST'});
+        const data = await r.json();
+        if (data.ok) {
+            renderOllamaLockState(!!data.ollama_locked, false);
+            fetchAdminActions();
+        } else {
+            alert('Fehler: ' + (data.error || 'unbekannt'));
+        }
+    } catch(e) {
+        alert('Netzwerkfehler beim Umschalten des Ollama-Locks');
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// Admin-Actions Audit Log
+async function fetchAdminActions() {
+    const tbody = document.getElementById('admin-actions-tbody');
+    tbody.innerHTML = '<tr><td colspan="5" class="text-center py-3 text-[#7f849c]">Lädt…</td></tr>';
+    try {
+        const r = await fetch('/api/admin/actions?limit=100');
+        const data = await r.json();
+        const actions = data.actions || [];
+        if (!actions.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center py-3 text-[#7f849c]">Noch keine Einträge.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = actions.map(a => `
+            <tr class="border-t border-[#313244]">
+                <td class="py-1 pr-4 text-[#7f849c] whitespace-nowrap">${escHtml(a.ts)}</td>
+                <td class="py-1 pr-4 font-bold text-[#cdd6f4]">${escHtml(a.action)}</td>
+                <td class="py-1 pr-4 ${a.source === 'auto' ? 'text-[#94e2d5]' : 'text-[#89b4fa]'}">${escHtml(a.source)}</td>
+                <td class="py-1 pr-4 text-[#7f849c]">${escHtml(a.client_ip || '—')}</td>
+                <td class="py-1 text-[#7f849c] truncate max-w-[300px]" title="${escHtml(a.detail || '')}">${escHtml(a.detail || '')}</td>
+            </tr>`).join('');
+    } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center py-3 text-[#f38ba8]">Fehler beim Laden.</td></tr>';
+    }
+}
+
+// Test API Logic
+async function testOllama(btn) {
+    const resultDiv = btn.parentElement.querySelector('.test-result');
+    resultDiv.classList.remove('hidden');
+    resultDiv.className = 'test-result text-xs mt-2 text-right text-[#7f849c]';
+    resultDiv.textContent = 'Testing...';
+    
+    try {
+        const res = await fetch('/api/admin/test_ollama');
+        const data = await res.json();
+        if(data.ok) {
+            resultDiv.className = 'test-result text-xs mt-2 text-right text-[#a6e3a1]';
+            resultDiv.textContent = `Success! Found ${data.count} models.`;
+        } else {
+            resultDiv.className = 'test-result text-xs mt-2 text-right text-[#f38ba8]';
+            resultDiv.textContent = `Error: ${data.error}`;
+        }
+    } catch(e) {
+        resultDiv.className = 'test-result text-xs mt-2 text-right text-[#f38ba8]';
+        resultDiv.textContent = 'Network Error';
+    }
+}
+
+async function testFrontierProvider(btn) {
+    const card = btn.closest('.provider-card');
+    const baseUrl = card.querySelector('.prov-base').value.trim();
+    const apiKey = card.querySelector('.prov-key').value.trim();
+    
+    const resultDiv = card.querySelector('.test-result');
+    resultDiv.classList.remove('hidden');
+    resultDiv.className = 'test-result text-xs mt-1 text-[#7f849c]';
+    resultDiv.textContent = 'Testing...';
+    
+    try {
+        const res = await fetch('/api/admin/test_frontier', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ base_url: baseUrl, api_key: apiKey })
+        });
+        const data = await res.json();
+        if(data.ok) {
+            resultDiv.className = 'test-result text-xs mt-1 text-[#a6e3a1]';
+            resultDiv.textContent = `Success! Found ${data.count} models. Preview: ${data.preview.join(', ')}`;
+        } else {
+            resultDiv.className = 'test-result text-xs mt-1 text-[#f38ba8]';
+            resultDiv.textContent = `Error: ${data.error}`;
+        }
+    } catch(e) {
+        resultDiv.className = 'test-result text-xs mt-1 text-[#f38ba8]';
+        resultDiv.textContent = 'Network Error';
+    }
+}
+
+// Model Browser Logic
+let currentModelInput = null;
+
+async function openModelBrowser(btn) {
+    const card = btn.closest('.provider-card');
+    const baseUrlInput = card.querySelector('.prov-base');
+    const apiKeyInput = card.querySelector('.prov-key');
+    const modelsInput = card.querySelector('.prov-models');
+    
+    currentModelInput = modelsInput;
+    
+    const baseUrl = baseUrlInput.value.trim();
+    const apiKey = apiKeyInput.value.trim();
+    
+    if(!baseUrl) {
+        alert("Please enter a Base URL first.");
+        return;
+    }
+    
+    // Show modal, loading state
+    document.getElementById('model-modal').classList.remove('hidden');
+    document.getElementById('model-modal-content').innerHTML = '<div class="text-center py-8 text-[#7f849c]">Loading models...</div>';
+    document.getElementById('model-search').value = '';
+    
+    try {
+        const res = await fetch('/api/admin/fetch_models', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ base_url: baseUrl, api_key: apiKey })
+        });
+        const data = await res.json();
+        
+        if(!data.ok) {
+            document.getElementById('model-modal-content').innerHTML = `<div class="text-center py-8 text-[#f38ba8]">Error: ${escHtml(data.error)}</div>`;
+            return;
+        }
+        
+        window.loadedModels = data.models; // store globally for search filter
+        
+        // currently selected models
+        const currentSelected = new Set(modelsInput.value.split(',').map(m => m.trim()).filter(m => m));
+        renderModelList(window.loadedModels, currentSelected);
+        
+    } catch(e) {
+        document.getElementById('model-modal-content').innerHTML = `<div class="text-center py-8 text-[#f38ba8]">Failed to load models.</div>`;
+    }
+}
+
+function closeModelBrowser() {
+    document.getElementById('model-modal').classList.add('hidden');
+    currentModelInput = null;
+    window.loadedModels = null;
+}
+
+function filterModels() {
+    if(!window.loadedModels) return;
+    const q = document.getElementById('model-search').value.toLowerCase();
+    
+    const checkboxes = document.querySelectorAll('#model-modal-content input[type="checkbox"]');
+    const currentSelected = new Set();
+    checkboxes.forEach(cb => {
+        if(cb.checked) currentSelected.add(cb.value);
+    });
+    
+    const filtered = window.loadedModels.filter(m => 
+        m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q)
+    );
+    
+    renderModelList(filtered, currentSelected);
+}
+
+function renderModelList(models, selectedSet) {
+    const container = document.getElementById('model-modal-content');
+    if(models.length === 0) {
+        container.innerHTML = '<div class="text-center py-8 text-[#7f849c]">No models found.</div>';
+        return;
+    }
+    
+    let html = '<div class="space-y-2">';
+    for(const m of models) {
+        const checked = selectedSet.has(m.id) ? 'checked' : '';
+        const hasPricing = m.cost_prompt !== 'N/A' || m.cost_completion !== 'N/A';
+        const pricingHtml = hasPricing ? 
+            `<div class="flex gap-2 mt-1">
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#313244] text-[#a6e3a1]">P: ${m.cost_prompt}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#313244] text-[#fab387]">C: ${m.cost_completion}</span>
+             </div>` : '';
+             
+        html += `
+        <label class="flex items-start gap-3 p-2 hover:bg-[#181825] rounded cursor-pointer border border-transparent hover:border-[#313244] transition">
+            <div class="pt-1">
+                <input type="checkbox" value="${escHtml(m.id)}" class="model-cb form-checkbox h-4 w-4 text-[#89b4fa] rounded border-[#313244] bg-[#11111b]" ${checked}>
+            </div>
+            <div class="flex-1 overflow-hidden">
+                <div class="font-bold text-sm text-[#cdd6f4] truncate" title="${escHtml(m.name)}">${escHtml(m.name)}</div>
+                <div class="text-xs text-[#7f849c] truncate" title="${escHtml(m.id)}">${escHtml(m.id)}</div>
+                ${pricingHtml}
+            </div>
+        </label>
+        `;
+    }
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function applySelectedModels() {
+    if(!currentModelInput) return closeModelBrowser();
+    
+    const checkboxes = document.querySelectorAll('.model-cb:checked');
+    const selectedIds = Array.from(checkboxes).map(cb => cb.value);
+    
+    currentModelInput.value = selectedIds.join(', ');
+    closeModelBrowser();
+}
+
 // Initialize
 initAdmin();
 </script>
+
+<!-- Model Browser Modal -->
+<div id="model-modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden flex items-center justify-center z-50 p-4">
+    <div class="bg-[#1e1e2e] border border-[#313244] rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+        <div class="p-4 border-b border-[#313244] flex justify-between items-center shrink-0">
+            <h2 class="text-lg font-bold text-[#cdd6f4]">Browse Models</h2>
+            <button onclick="closeModelBrowser()" class="text-[#7f849c] hover:text-[#cdd6f4]">&times;</button>
+        </div>
+        <div class="p-4 border-b border-[#313244] shrink-0">
+            <input type="text" id="model-search" onkeyup="filterModels()" placeholder="Search models..." class="w-full bg-[#11111b] border border-[#313244] rounded p-2 text-sm text-[#cdd6f4]">
+        </div>
+        <div id="model-modal-content" class="p-4 overflow-y-auto flex-1">
+            <!-- Models injected here -->
+        </div>
+        <div class="p-4 border-t border-[#313244] text-right shrink-0">
+            <button onclick="closeModelBrowser()" class="text-[#7f849c] hover:text-[#cdd6f4] px-4 py-2 mr-2 text-sm">Cancel</button>
+            <button onclick="applySelectedModels()" class="bg-[#89b4fa] text-[#1e1e2e] px-4 py-2 rounded text-sm font-bold hover:bg-[#b4befe] transition">Apply Selected</button>
+        </div>
+    </div>
+</div>
+
 {% endblock %}

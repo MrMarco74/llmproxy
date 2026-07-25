@@ -1,0 +1,10 @@
+# Manueller Schalter: sperrt gezielt den Zugriff auf lokale Ollama-Modelle,
+# z.B. um beide GPUs für ComfyUI freizuräumen. Frontier-Fallback (fallback.yaml)
+# bleibt für Clients mit frontier_allowed: true nutzbar - im Unterschied zum
+# harten Stop-All blockiert dieser Schalter nicht ausnahmslos alles.
+#
+# Wird über die Endpunkte /maintenance/ollama-lock und /maintenance/ollama-unlock
+# umgeschaltet (oder über das Dashboard: Admin → GPU-Lock). Dieser Datei-Inhalt
+# ist nur der persistierte Startzustand - im laufenden Betrieb bitte die
+# Endpunkte/das Dashboard verwenden, nicht diese Datei direkt editieren.
+locked: false

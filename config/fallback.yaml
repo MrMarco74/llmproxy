@@ -1,0 +1,15 @@
+# Automatischer Fallback auf ein Frontier-Modell, wenn der zuständige
+# Ollama-Upstream nicht erreichbar ist. Greift nur für Clients mit
+# frontier_allowed: true (siehe clients.yaml) und nur für Modelle, die hier
+# in `mapping` auf ein in frontier.yaml konfiguriertes Frontier-Modell zeigen.
+# Nur für den OpenAI-kompatiblen Endpunkt (/v1/chat/completions) — /api/chat
+# und /api/generate (natives Ollama-Format) haben keinen Fallback.
+enabled: false
+mapping: {}
+# Beispiel (ein "*"-Key wirkt als Catchall für jedes Modell ohne eigenen
+# Eintrag; ein exakter Modell-Match hat immer Vorrang):
+# enabled: true
+# mapping:
+#   "qwen2.5:14b": gemini-1.5-pro
+#   "llama3.1:8b": gemini-1.5-flash
+#   "*": gemini-1.5-flash

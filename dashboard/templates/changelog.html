@@ -8,6 +8,60 @@
 
 <div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
 
+  <div class="card relative pl-10 border-l-4 border-l-[#cba6f7]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#cba6f7] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#cba6f7] text-lg">v2.7.0 — Admin-Audit-Log</h2>
+      <span class="text-sm text-[#7f849c]">24. Juli 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Audit-Trail:</strong> Jede <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">/maintenance/*</code>-Aktion (Stop-All, Ollama-Lock/-Unlock, Evict-Models, Force-Purge, Cleanup, Logging, Gaming-Override) landet jetzt in einer neuen <code class="bg-[#313244] px-1 py-0.5 rounded">admin_actions</code>-Tabelle — Zeitstempel, Aktion, Quelle (<code class="bg-[#313244] px-1 py-0.5 rounded">admin</code> vs. <code class="bg-[#313244] px-1 py-0.5 rounded">auto</code>), auslösende IP, Detail.</li>
+      <li><strong>Neuer Endpunkt:</strong> <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">GET /admin/actions</code> (Admin-Token nötig) liefert die letzten Einträge.</li>
+      <li><strong>Dashboard:</strong> Neue Tabelle „📋 Admin-Audit-Log" unter Admin → Settings, zeigt die letzten 100 Aktionen inkl. Quelle.</li>
+    </ul>
+  </div>
+
+  <div class="card relative pl-10 border-l-4 border-l-[#94e2d5]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#94e2d5] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#94e2d5] text-lg">v2.6.0 — Auto-Lock bei ComfyUI-Rendering & Maintenance-Auth</h2>
+      <span class="text-sm text-[#7f849c]">24. Juli 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Automatischer Ollama-Lock:</strong> Sobald ComfyUIs Queue nicht leer ist (etwas rendert oder wartet), sperrt der Proxy lokale Ollama-Modelle von selbst — analog zur bestehenden Gaming-Mode-Erkennung. Wird die Queue wieder leer, hebt sich ein automatisch gesetzter Lock von selbst wieder auf.</li>
+      <li><strong>Manuell hat Vorrang:</strong> Ein per Dashboard/API gesetzter Lock wird vom Auto-Detector nicht angetastet, auch wenn die ComfyUI-Queue zwischendurch leer ist — erst ein manuelles Entsperren gibt ihn wieder frei.</li>
+      <li><strong>Sicherheitsfix:</strong> Alle <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">/maintenance/*</code>-Endpunkte (Stop-All, Ollama-Lock, Evict-Models, Force-Purge, Logging, Gaming-Override) verlangen jetzt wie <code class="bg-[#313244] px-1 py-0.5 rounded">/admin/*</code> den <code class="bg-[#313244] px-1 py-0.5 rounded">X-Admin-Token</code>-Header — vorher waren sie offen für jeden im LAN. Die Status-Seite <code class="bg-[#313244] px-1 py-0.5 rounded">GET /status/gpu/html</code> verlangt aus demselben Grund jetzt <code class="bg-[#313244] px-1 py-0.5 rounded">?token=&lt;admin-token&gt;</code>, statt den Token unauthentifiziert an jeden Besucher auszuliefern.</li>
+    </ul>
+  </div>
+
+  <div class="card relative pl-10 border-l-4 border-l-[#f38ba8]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f38ba8] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#f38ba8] text-lg">v2.5.0 — Ollama-Lock für exklusive GPU-Nutzung</h2>
+      <span class="text-sm text-[#7f849c]">24. Juli 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Ollama-Lock:</strong> <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">POST /maintenance/ollama-lock</code> sperrt gezielt nur den Zugriff auf lokale Ollama-Modelle und entlädt sie sofort aus dem VRAM — gedacht für den Fall, dass beide GPUs kurzzeitig exklusiv für ComfyUI gebraucht werden. <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">POST /maintenance/ollama-unlock</code> hebt die Sperre wieder auf.</li>
+      <li><strong>Fallback bleibt aktiv:</strong> Im Unterschied zum bestehenden Stop-All-Modus werden Clients mit Frontier-Fallback (<code class="bg-[#313244] px-1 py-0.5 rounded">fallback.yaml</code>) bei aktivem Lock weiterhin bedient — nur die lokale GPU bleibt frei.</li>
+      <li><strong>Persistiert:</strong> Der Zustand wird in <code class="bg-[#313244] px-1 py-0.5 rounded">config/ollama_lock.yaml</code> gespeichert und übersteht damit einen Neustart des Proxys.</li>
+      <li><strong>Dashboard:</strong> Neuer Schalter unter Admin → Settings → „🔒 Ollama-Lock".</li>
+    </ul>
+  </div>
+
+  <div class="card relative pl-10 border-l-4 border-l-[#fab387]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#fab387] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#fab387] text-lg">v2.4.0 — Ollama-Fallback auf Frontier-Modelle</h2>
+      <span class="text-sm text-[#7f849c]">22. Juli 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Auto-Failover:</strong> Ist der zuständige Ollama-Upstream nicht erreichbar, leitet <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">/v1/chat/completions</code> automatisch auf ein konfiguriertes Frontier-Modell um (<code class="bg-[#313244] px-1 py-0.5 rounded">fallback.yaml</code>) — nur für Clients mit "Allow Frontier LLMs".</li>
+      <li><strong>Admin UI:</strong> Neuer „Fallback"-Tab im Dashboard zur Modell-Zuordnung (lokal → Frontier), inkl. Live-Health-Status pro Upstream.</li>
+      <li><strong>"*"-Catchall:</strong> Ein <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">"*"</code>-Key im Mapping wirkt als Fallback für jedes Modell ohne eigenen Eintrag.</li>
+      <li><strong>Bugfixes:</strong> Frontier-Modell-Liste blieb in der Admin-UI leer, wenn Ollama down war (entkoppelte Fetches); Dropdown statt Freitext-Datalist für robusteres Modell-Mapping.</li>
+    </ul>
+  </div>
+
   <div class="card relative pl-10 border-l-4 border-l-[#f38ba8]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f38ba8] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">

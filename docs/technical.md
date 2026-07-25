@@ -96,6 +96,36 @@ Alle Endpoints lauschen auf `:11435`.
 | POST | `/notifications/{id}/read` | Notification als gelesen markieren |
 | POST | `/notifications/read-all` | Alle Notifications als gelesen markieren |
 
+### Maintenance
+
+Alle `/maintenance/*`-Endpunkte (außer `/maintenance/logging` GET, siehe unten — der ist
+inzwischen auch geschützt) verlangen den `X-Admin-Token`-Header (gleicher Mechanismus wie
+`/admin/*`, siehe `_check_admin`). Das Dashboard sendet ihn bei jedem Proxy-Call bereits mit.
+
+| Methode | Pfad | Beschreibung |
+|---|---|---|
+| POST | `/maintenance/stop-all` | Blockiert **ausnahmslos alle** Inference-Requests (503) und killt laufende llama-server-Prozesse. Aufheben via `/maintenance/resume`. |
+| POST | `/maintenance/resume` | Hebt `/maintenance/stop-all` wieder auf. |
+| POST | `/maintenance/ollama-lock` | Sperrt gezielt nur den Zugriff auf **lokale** Ollama-Modelle und entlädt sie sofort aus dem VRAM (z.B. um beide GPUs für ComfyUI freizuräumen). Clients mit `frontier_allowed: true` werden weiterhin über `fallback.yaml` bedient (`/v1/chat/completions`); native Endpunkte und Embeddings liefern hart `503`. Zustand persistiert in `config/ollama_lock.yaml`, übersteht also einen Neustart. Response: `{ok, ollama_locked, evicted}`. |
+| POST | `/maintenance/ollama-unlock` | Hebt `/maintenance/ollama-lock` wieder auf. Response: `{ok, ollama_locked}`. |
+| POST | `/maintenance/evict-models` | Entlädt alle aktuell geladenen Modelle aus dem VRAM (on-demand, ohne Lock zu setzen). |
+| POST | `/maintenance/force-purge` | Zweistufiger Hard-Reset: soft evict, dann `killall llama-server`. |
+| POST/GET | `/maintenance/logging` | `{"enabled": bool}` — aktiviert/deaktiviert DB-Logging zur Laufzeit. |
+| POST | `/maintenance/gaming_override` | `{"override": "auto"\|"on"\|"off"}` — manueller Override für die Gaming-Mode-Erkennung. |
+
+Der aktuelle Zustand von `stop_all`, `ollama_locked` und `ollama_lock_auto` wird zusätzlich
+über `/health` und `/status` ausgegeben (`/status/gpu` nur `ollama_locked`, ohne Herkunft).
+
+#### Automatischer Ollama-Lock bei aktiver ComfyUI-Queue
+
+`_poll_comfyui_queue()` pollt alle 10s `GET <gpu-host>:8188/queue`. Ist `queue_running` oder
+`queue_pending` nicht leer, wird `_set_ollama_lock(True, auto=True, ...)` aufgerufen — intern,
+ohne `X-Admin-Token` (kein HTTP-Request, direkter Funktionsaufruf). Ist die Queue leer **und**
+der aktuelle Lock wurde vom Poller selbst gesetzt (`_ollama_lock_auto == True`), wird er wieder
+aufgehoben. Ein manuell per `/maintenance/ollama-lock` gesetzter Lock (`auto=False`) wird vom
+Poller **nicht** angetastet, auch wenn die Queue leer ist — erst ein manuelles
+`/maintenance/ollama-unlock` gibt ihn wieder frei. Das ComfyUI-Analogon zu `_poll_gaming_mode()`.
+
 ### Debug
 
 | Methode | Pfad | Body | Beschreibung |
@@ -218,6 +248,22 @@ PK: `(client_ip, date)`
 | `priority` | TEXT | `default`, `high`, `urgent` |
 | `read_at` | TEXT | ISO-8601 Timestamp wenn gelesen, sonst NULL |
 
+### Tabelle `admin_actions`
+
+Audit-Trail für `/maintenance/*`-Aktionen (siehe `_log_admin_action()`). Unabhängig von
+`logging.yaml` immer geschrieben und nicht Teil von `/maintenance/cleanup`'s Löschlogik.
+
+| Spalte | Typ | Beschreibung |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `ts` | TEXT | ISO-8601 Timestamp |
+| `action` | TEXT | z.B. `stop-all`, `ollama-lock`, `evict-models`, `force-purge`, `cleanup`, `logging`, `gaming_override` |
+| `source` | TEXT | `admin` (per `X-Admin-Token`) oder `auto` (ComfyUI-Queue-Poller) |
+| `client_ip` | TEXT | IP des Aufrufers, leer bei `source=auto` |
+| `detail` | TEXT | Freitext, z.B. evicted-Modelle, gekillte PIDs, gesetzter Override |
+
+Abfragbar über `GET /admin/actions?limit=100` (Admin-Token nötig).
+
 ### Tabelle `client_profiles`
 
 | Spalte | Typ | Beschreibung |
@@ -259,6 +305,21 @@ providers:
       - "gpt-3.5-turbo"
 ```
 
+### `fallback.yaml`
+
+Automatischer Fallback auf ein Frontier-Modell, wenn der zuständige Ollama-Upstream
+nicht erreichbar ist — nur für `/v1/chat/completions`, nur für Clients mit
+`frontier_allowed: true`. Erkennung über zwei Signale: einen periodischen
+Health-Check (`_poll_model_catalog()`, alle 30s) plus sofortiges Umleiten bei
+einem echten Verbindungsfehler auf dem Live-Request.
+
+```yaml
+enabled: true
+mapping:
+  "<lokales_modell>": "<frontier_modell_aus_frontier.yaml>"
+  "*": "<frontier_modell_aus_frontier.yaml>"   # Catchall, greift wenn kein exakter Match existiert
+```
+
 ### `routing.yaml`
 
 ```yaml
@@ -269,6 +330,22 @@ routes:
 ```
 
 Regeln werden in Reihenfolge geprüft; erste Übereinstimmung gewinnt.
+
+### `ollama_lock.yaml`
+
+Manueller Schalter, der gezielt nur den Zugriff auf lokale Ollama-Modelle sperrt (z.B.
+um beide GPUs exklusiv für ComfyUI freizuräumen) — im Unterschied zu `/maintenance/stop-all`,
+das ausnahmslos alles blockiert. Clients mit `frontier_allowed: true` werden bei aktivem
+Lock weiterhin über den bestehenden `fallback.yaml`-Mechanismus bedient (`/v1/chat/completions`
+leitet automatisch um); `/api/chat`, `/api/generate`, `/api/embeddings` und `/v1/embeddings`
+kennen keinen Fallback und liefern hart `503`.
+
+```yaml
+locked: <bool>
+```
+
+Wird nicht direkt editiert, sondern über die Endpunkte umgeschaltet (siehe unten) — der
+Datei-Inhalt ist nur der persistierte Startzustand, der einen Proxy-Neustart übersteht.
 
 ### `eviction.yaml`
 
@@ -444,3 +521,11 @@ Basis-URL: `http://<proxy-host>:18080`
 | GET | `/api/admin/clients_usage` | — | Liest aktuelle Budget-Nutzung |
 | GET | `/api/admin/frontier` | — | Liest `frontier.yaml` |
 | POST | `/api/admin/frontier` | JSON Body | Speichert `frontier.yaml` und lädt Konfiguration neu |
+| GET | `/api/admin/fallback` | — | Liest `fallback.yaml` (+ `ollama_healthy`) |
+| POST | `/api/admin/fallback` | JSON Body | Speichert `fallback.yaml` und lädt Konfiguration neu |
+| GET | `/api/admin/actions` | `?limit=100` | Proxied `/admin/actions` — Audit-Trail der `/maintenance/*`-Aktionen |
+| POST | `/api/proxy/maintenance/stop-all` | — | Proxied `/maintenance/stop-all` |
+| POST | `/api/proxy/maintenance/resume` | — | Proxied `/maintenance/resume` |
+| POST | `/api/proxy/maintenance/ollama-lock` | — | Proxied `/maintenance/ollama-lock` — sperrt lokale Ollama-Modelle, entlädt VRAM |
+| POST | `/api/proxy/maintenance/ollama-unlock` | — | Proxied `/maintenance/ollama-unlock` — hebt den Ollama-Lock auf |
+| GET | `/api/proxy/health` | — | Proxied `/health` (u.a. `ollama_locked`, `stop_all`, `gaming_mode`) |

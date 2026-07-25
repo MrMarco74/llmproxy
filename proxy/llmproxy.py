@@ -35,13 +35,14 @@ Features:
     (fixes vision/rare models silently 404ing on load-balanced round-robin)
 """
 
-__version__ = "2.4.0"
+__version__ = "2.7.0"
 
 import asyncio
 import datetime
 import json
 import logging
 import os
+import secrets
 import socket
 import sqlite3
 import subprocess
@@ -61,6 +62,34 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
 logger = logging.getLogger("llmproxy")
 
+# Splunk JSON Logger
+import logging.handlers
+
+splunk_logger = logging.getLogger("llmproxy_splunk")
+splunk_logger.setLevel(logging.INFO)
+splunk_logger.propagate = False
+try:
+    splunk_handler = logging.handlers.WatchedFileHandler("/var/lib/llmproxy/audit.log")
+    splunk_handler.setFormatter(logging.Formatter("%(message)s"))
+    splunk_logger.addHandler(splunk_handler)
+except Exception as e:
+    logger.error(f"Failed to initialize Splunk logger: {e}")
+
+def _log_to_splunk(event_type: str, data: dict):
+    if not _logging_cfg.get("enabled", True):
+        return
+    payload = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "event_type": event_type,
+        "app": "llmproxy",
+    }
+    payload.update(data)
+    try:
+        splunk_logger.info(json.dumps(payload))
+    except Exception as e:
+        logger.error(f"[splunk] log error: {e}")
+
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 # Proxy läuft auf dem Proxy-Host, Ollama/ComfyUI bleiben auf dem GPU-Host —
@@ -77,10 +106,25 @@ COMFYUI_HOST      = GPU_HOST
 COMFYUI_PORT      = 18189
 GPU_AGENT_URL     = f"http://{GPU_HOST}:11436"
 
-DB_PATH           = Path("/root/.llmproxy.db")
+DB_PATH           = Path("/var/lib/llmproxy/llmproxy.db")
 CONFIG_DIR        = Path("/opt/llmproxy")
 
+# Same wildcard cert already used by reverse-proxy for *.internal.familie-frischkorn.de,
+# issued directly on this host (see reverse-proxy/scripts/issue_internal_cert.sh).
+_SSL_CERT         = Path("/etc/letsencrypt/live/internal.familie-frischkorn.de/fullchain.pem")
+_SSL_KEY          = Path("/etc/letsencrypt/live/internal.familie-frischkorn.de/privkey.pem")
+
 DEFAULT_OLLAMA_OPTIONS = {"num_gpu": -1, "num_ctx": 65536}
+
+# Per-model num_ctx overrides — DEFAULT_OLLAMA_OPTIONS is shared by every
+# model behind this proxy, including small models on the 12GB GPU1-only
+# upstream, so it must stay conservative. Larger windows are opted in here
+# per model instead of raised globally.
+MODEL_NUM_CTX_OVERRIDES = {
+    # Dual-GPU tensor split (24GB combined) with OLLAMA_NUM_PARALLEL=1 —
+    # see docs/technical.md and doku/posts/13-app-llmproxy.md.
+    "qwen3.6-35b-uncensored-nolimit:IQ3_M": 131072,
+}
 
 # Log retention (days) — used by /maintenance/cleanup
 LOG_RETENTION_DAYS = {"failures": 14, "notifications": 30, "requests": 180}
@@ -97,11 +141,181 @@ def _load_yaml(name: str, default: dict) -> dict:
     return default
 
 _client_cfg       = _load_yaml("clients.yaml",       {"clients": {"default": {"limit": 5_000_000, "models": "*", "blocked": False}}})
+_tokens_cfg       = _load_yaml("tokens.yaml",        {"tokens": {}})
 _frontier_cfg     = _load_yaml("frontier.yaml",      {"enabled": False, "providers": {}})
 _routing_cfg      = _load_yaml("routing.yaml",        {"routes": []})
 _eviction_cfg     = _load_yaml("eviction.yaml",        {"eviction_timeout_min": 15, "vram_threshold_pct": 80, "never_evict": []})
 _notify_cfg       = _load_yaml("notifications.yaml",  {"events": {}})
 _logging_cfg      = _load_yaml("logging.yaml",        {"enabled": True})
+_fallback_cfg     = _load_yaml("fallback.yaml",        {"enabled": False, "mapping": {}})
+
+_guardrails_cfg = _load_yaml("guardrails.yaml", {"enabled": False, "rules": []})
+_fail2ban_cfg = _load_yaml("fail2ban.yaml", {"bans": {}})
+
+def _dlp_mask(text: str) -> str:
+    # TODO: Connect to Microsoft Presidio or local NLP
+    # For now, simulate by replacing standard regexes
+    import re
+    text = re.sub(r'\b\d{4}-\d{4}-\d{4}-\d{4}\b', '[CREDIT_CARD]', text)
+    text = re.sub(r'\b\d{3}-\d{2}-\d{4}\b', '[SSN]', text)
+    return text
+
+def _is_banned(token_name: str) -> bool:
+    ban_time = _fail2ban_cfg.get("bans", {}).get(token_name)
+    if ban_time:
+        import time
+        if time.time() < ban_time:
+            return True
+        else:
+            del _fail2ban_cfg["bans"][token_name]
+            with open(CONFIG_DIR / "fail2ban.yaml", "w") as f:
+                yaml.safe_dump(_fail2ban_cfg, f)
+    return False
+
+def _record_violation(token_name: str, client_ip: str, rule: dict, prompt: str):
+    import time
+    now = time.time()
+    
+    # SQLite Log
+    try:
+        _db().execute(
+            "INSERT INTO guardrail_events (ts, token_name, client_ip, action, trigger, rule_pattern, snippet) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [datetime.datetime.now().isoformat(), token_name, client_ip, rule.get("action", "deny"), rule.get("trigger", ""), rule.get("pattern", ""), prompt[:200]]
+        )
+        _db().commit()
+    except Exception as e:
+        logger.error(f"[guardrails] sqlite error: {e}")
+
+    # Track in memory for Fail2Ban
+    if not hasattr(_record_violation, "strikes"):
+        _record_violation.strikes = {}
+    strikes = _record_violation.strikes.setdefault(token_name, [])
+    strikes = [s for s in strikes if now - s < 300]
+    strikes.append(now)
+    _record_violation.strikes[token_name] = strikes
+    
+    if len(strikes) >= 10:
+        _fail2ban_cfg.setdefault("bans", {})[token_name] = now + 3600
+        with open(CONFIG_DIR / "fail2ban.yaml", "w") as f:
+            yaml.safe_dump(_fail2ban_cfg, f)
+        _log_to_splunk("guardrail_fail2ban", {"token_name": token_name, "duration": 3600})
+
+
+def _check_output_safeguards(text: str, token_name: str) -> bool:
+    # Basic output guardrail check (returns True if safe, False if blocked)
+    if not _guardrails_cfg.get("enabled", False):
+        return True
+        
+    rules = _guardrails_cfg.get("rules", [])
+    text_lower = text.lower()
+    for rule in rules:
+        if rule.get("trigger") == "output_keyword":
+            if rule.get("pattern", "").lower() in text_lower:
+                _log_to_splunk("output_guardrail_violation", {"token_name": token_name, "rule": rule, "snippet": text[:200]})
+                return False
+        elif rule.get("trigger") == "output_dlp":
+            if re.search(r'\d{4}-\d{4}-\d{4}-\d{4}', text): # e.g. leaked credit card
+                _log_to_splunk("output_guardrail_dlp_leak", {"token_name": token_name, "snippet": text[:200]})
+                return False
+    return True
+
+
+def _run_guardrails(prompt_text: str, token_name: str, client_ip: str, body: dict) -> tuple[bool, str|None, str, dict]:
+    if not _guardrails_cfg.get("enabled", False):
+        return False, None, "pass", body
+        
+    if _is_banned(token_name):
+        return False, "Token is banned (Fail2Ban)", "deny", body
+        
+    rules = _guardrails_cfg.get("rules", [])
+    prompt_lower = prompt_text.lower()
+    
+    modified = False
+    new_body = body.copy()
+    
+    for rule in rules:
+        trigger = rule.get("trigger", "keyword")
+        pattern = rule.get("pattern", "")
+        action = rule.get("action", "pass")
+        mode = rule.get("mode", "enforce")
+        
+        hit = False
+        if trigger == "dlp":
+            masked = _dlp_mask(prompt_text)
+            if masked != prompt_text:
+                hit = True
+                if action == "rewrite" and mode == "enforce":
+                    prompt_text = masked
+                    modified = True
+                    
+        elif trigger == "keyword":
+            if pattern.lower() in prompt_lower:
+                hit = True
+                
+        elif trigger == "regex":
+            import re
+            if re.search(pattern, prompt_text, re.IGNORECASE):
+                hit = True
+                
+        if hit:
+            msg = f"Triggered {trigger}: {pattern}"
+            if mode == "shadow":
+                _log_to_splunk("guardrail_shadow_violation", {"token_name": token_name, "rule": rule, "snippet": prompt_text[:200]})
+                continue
+                
+            if action in ("deny", "silent"):
+                _record_violation(token_name, client_ip, rule, prompt_text)
+                return False, msg, action, new_body
+                
+            if action == "redirect":
+                new_body["model"] = rule.get("target_model", "local-fallback")
+                modified = True
+                _log_to_splunk("guardrail_redirected", {"token_name": token_name, "from": body.get("model"), "to": new_body["model"]})
+                
+    if modified:
+        if "messages" in new_body and isinstance(new_body["messages"], list) and len(new_body["messages"]) > 0:
+            new_body["messages"][-1]["content"] = prompt_text
+        elif "prompt" in new_body:
+            new_body["prompt"] = prompt_text
+        _log_to_splunk("guardrail_rewritten", {"token_name": token_name})
+            
+    return modified, None, "pass", new_body
+
+async def _guard_safeguards(request: Request):
+    if request.url.path not in ["/api/chat", "/api/generate", "/v1/chat/completions"]:
+        return
+        
+    try:
+        body_bytes = await request.body()
+        body = json.loads(body_bytes)
+    except Exception:
+        return
+        
+    prompt_text = _extract_last_user_message(body)
+    if not prompt_text:
+        return
+        
+    token_name = _get_token_name(request)
+    client_ip = _get_client_ip(request)
+    
+    modified, violation, action, new_body = _run_guardrails(prompt_text, token_name, client_ip, body)
+    
+    if action in ("deny", "silent"):
+        status = 403 if action == "deny" else 200
+        detail = {"error": "Request blocked by guardrails", "violation": violation} if action == "deny" else {"status": "ok"}
+        
+        _db_log_failure(model=body.get("model", "unknown"), client_ip=client_ip, token_name=token_name,
+                        endpoint=request.url.path, status_code=status, failure_reason="guardrail_blocked",
+                        last_user_message=prompt_text)
+        _log_to_splunk("guardrail_violation", {
+            "token_name": token_name, "client_ip": client_ip, "violation": violation, "action": action
+        })
+        raise HTTPException(status_code=status, detail=detail)
+        
+    if modified:
+        request._body = json.dumps(new_body).encode("utf-8")
+
+_ollama_lock_cfg  = _load_yaml("ollama_lock.yaml",      {"locked": False})
 
 # ── SQLite ─────────────────────────────────────────────────────────────────────
 
@@ -125,6 +339,7 @@ def _db_init():
             duration_s          REAL,
             tokens_per_second   REAL,
             ttft_s              REAL,
+            token_name          TEXT,
             client_ip           TEXT,
             user_agent          TEXT,
             endpoint            TEXT,
@@ -143,6 +358,7 @@ def _db_init():
             id                  INTEGER PRIMARY KEY,
             ts                  TEXT,
             model               TEXT,
+            token_name          TEXT,
             client_ip           TEXT,
             endpoint            TEXT,
             status_code         INTEGER,
@@ -158,13 +374,15 @@ def _db_init():
             updated_at          TEXT
         );
         CREATE TABLE IF NOT EXISTS budgets (
-            client_ip           TEXT,
+            token_name          TEXT,
             date                TEXT,
             tokens_used         INTEGER DEFAULT 0,
-            PRIMARY KEY (client_ip, date)
+            tokens_used_local   INTEGER DEFAULT 0,
+            tokens_used_frontier INTEGER DEFAULT 0,
+            PRIMARY KEY (token_name, date)
         );
         CREATE TABLE IF NOT EXISTS client_profiles (
-            client_ip           TEXT PRIMARY KEY,
+            token_name          TEXT PRIMARY KEY,
             avg_complexity      REAL,
             top_model           TEXT,
             peak_hour           INTEGER,
@@ -182,17 +400,66 @@ def _db_init():
             priority    TEXT DEFAULT 'default',
             read_at     TEXT
         );
+        CREATE TABLE IF NOT EXISTS admin_actions (
+            id          INTEGER PRIMARY KEY,
+            ts          TEXT,
+            action      TEXT,
+            source      TEXT,
+            token_name  TEXT,
+            client_ip   TEXT,
+            detail      TEXT
+        );
+        CREATE TABLE IF NOT EXISTS guardrail_events (
+            id          INTEGER PRIMARY KEY,
+            ts          TEXT,
+            token_name  TEXT,
+            client_ip   TEXT,
+            action      TEXT,
+            trigger     TEXT,
+            rule_pattern TEXT,
+            snippet     TEXT
+        );
         CREATE INDEX IF NOT EXISTS idx_date     ON requests(date);
         CREATE INDEX IF NOT EXISTS idx_model    ON requests(model);
+        CREATE INDEX IF NOT EXISTS idx_token    ON requests(token_name);
         CREATE INDEX IF NOT EXISTS idx_ip       ON requests(client_ip);
         CREATE INDEX IF NOT EXISTS idx_ts       ON requests(ts);
         CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications(ts);
+        CREATE INDEX IF NOT EXISTS idx_admin_actions_ts ON admin_actions(ts);
+        CREATE INDEX IF NOT EXISTS idx_guardrail_events_ts ON guardrail_events(ts);
     """)
-    for col_def in ["hostname TEXT", "prompt_text TEXT", "response_text TEXT"]:
+    for col_def in ["hostname TEXT", "prompt_text TEXT", "response_text TEXT", "is_frontier INTEGER DEFAULT 0"]:
         try:
             con.execute(f"ALTER TABLE requests ADD COLUMN {col_def}")
         except Exception:
             pass
+    for col_def in ["tokens_used_local INTEGER DEFAULT 0", "tokens_used_frontier INTEGER DEFAULT 0"]:
+        try:
+            con.execute(f"ALTER TABLE budgets ADD COLUMN {col_def}")
+        except Exception:
+            pass
+            
+    # Migration: Rename client_ip to token_name in budgets and profiles (they are purely identity-based)
+    for table in ["budgets", "client_profiles"]:
+        try:
+            con.execute(f"ALTER TABLE {table} RENAME COLUMN client_ip TO token_name")
+        except Exception:
+            pass
+            
+    # Add token_name to tables that track both IP and identity
+    for table in ["requests", "failures", "admin_actions"]:
+        try:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN token_name TEXT")
+        except Exception:
+            pass
+
+    # Add new metadata columns for full feature readiness
+    for col_def in ["project TEXT", "org_group TEXT", "user TEXT"]:
+        try:
+            con.execute(f"ALTER TABLE requests ADD COLUMN {col_def}")
+        except Exception:
+            pass
+            
     con.commit()
     con.close()
 
@@ -205,6 +472,12 @@ def _db() -> sqlite3.Connection:
     return _db_con
 
 def _db_insert_request(**kw):
+    token_name = kw.get("token_name")
+    if token_name:
+        meta = _tokens_cfg.get("metadata", {}).get(token_name, {})
+        kw["project"] = meta.get("project", "")
+        kw["org_group"] = meta.get("org_group", "")
+        kw["user"] = meta.get("user", "")
     if not _logging_cfg.get("enabled", True):
         # Performance-/Token-Metriken immer loggen; Prompt/Response-Text nur bei aktivem Logging
         for key in ("prompt_text", "response_text"):
@@ -220,25 +493,45 @@ def _db_insert_request(**kw):
     except Exception as e:
         logger.error(f"[db] insert error: {e}")
 
-def _db_log_failure(*, model: str, client_ip: str, endpoint: str,
+    _log_to_splunk("request_completed", kw)
+
+def _db_log_failure(*, model: str, client_ip: str, token_name: str = "", endpoint: str,
                     status_code: int, failure_reason: str, last_user_message: str = ""):
     if not _logging_cfg.get("enabled", True):
         return
     now = datetime.datetime.now().isoformat(timespec="seconds")
     try:
         _db().execute(
-            "INSERT INTO failures (ts, model, client_ip, endpoint, status_code, failure_reason, last_user_message) "
+            "INSERT INTO failures (ts, model, client_ip, token_name, endpoint, status_code, failure_reason, last_user_message) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [now, model, client_ip, endpoint, status_code, failure_reason, last_user_message[:500]]
+            [now, model, client_ip, token_name, endpoint, status_code, failure_reason, last_user_message[:500]]
         )
         _db().commit()
     except Exception as e:
         logger.error(f"[db] failure log error: {e}")
 
+def _log_admin_action(action: str, source: str, client_ip: str = "", token_name: str = "", detail: str = ""):
+    """Audit-Trail für /maintenance/*-Aktionen (Stop-All, Ollama-Lock, ...).
+    `source` unterscheidet, wer die Aktion ausgelöst hat: 'admin' (per
+    X-Admin-Token über Dashboard/API) oder 'auto' (z.B. der ComfyUI-Queue-
+    Poller, ohne HTTP-Request). Immer geloggt, unabhängig von logging.yaml -
+    Admin-Aktionen sind kein Inferenz-Traffic und sollen auch bei
+    deaktiviertem Request-Logging nachvollziehbar bleiben."""
+    now = datetime.datetime.now().isoformat(timespec="seconds")
+    try:
+        _db().execute(
+            "INSERT INTO admin_actions (ts, action, source, client_ip, token_name, detail) VALUES (?, ?, ?, ?, ?)",
+            [now, action, source, client_ip, token_name, detail]
+        )
+        _db().commit()
+    except Exception as e:
+        logger.error(f"[db] admin_actions log error: {e}")
+
+
 def _db_get_recent(n: int = 20) -> list[dict]:
     try:
         cur = _db().execute(
-            "SELECT ts, model, client_ip, endpoint, prompt_tokens, completion_tokens, "
+            "SELECT ts, model, client_ip, token_name, endpoint, prompt_tokens, completion_tokens, "
             "tokens_per_second, duration_s, status_code FROM requests ORDER BY id DESC LIMIT ?", [n]
         )
         cols = [d[0] for d in cur.description]
@@ -272,6 +565,17 @@ async def _notify(event: str, title: str, message: str, priority: str = "default
 _gaming_mode:     bool = False
 _gaming_override: str  = "auto"
 _stop_all:        bool = False   # Maintenance-Modus: blockiert alle Inference-Requests
+# Manueller Schalter (persistiert in config/ollama_lock.yaml): sperrt gezielt nur den
+# Zugriff auf lokale Ollama-Modelle, z.B. um beide GPUs für ComfyUI freizuräumen.
+# Frontier-Fallback (fallback.yaml) bleibt dabei nutzbar - im Unterschied zu _stop_all,
+# das ausnahmslos alles blockiert.
+_ollama_locked:   bool = _ollama_lock_cfg.get("locked", False)
+# True wenn der aktuelle Lock-Zustand vom ComfyUI-Queue-Poller gesetzt wurde
+# (siehe _poll_comfyui_queue) statt manuell per /maintenance/ollama-lock -
+# nur dann darf der Poller automatisch wieder entsperren, sobald die Queue
+# leer ist. Ein manueller Lock/Unlock setzt dies immer auf False, damit der
+# Poller einen bewusst gesetzten Zustand nicht überschreibt.
+_ollama_lock_auto: bool = False
 _hw_stats:        dict = {}
 _loaded_models:   list = []
 # Modell-Katalog pro Upstream (0/1), gefüllt von _poll_model_catalog() via /api/tags.
@@ -279,18 +583,23 @@ _loaded_models:   list = []
 # aber ggf. gerade nicht geladen". Wird gebraucht, damit das Routing weiss, welches
 # Modell wo überhaupt existiert (z.B. Vision-Modelle, die nur auf einer GPU liegen).
 _model_catalog:   dict[int, set] = {0: set(), 1: set()}
+# Erreichbarkeit pro Ollama-Upstream, gepflegt vom selben Poll wie _model_catalog
+# (jeder erfolgreiche /api/tags-Call = healthy). Treibt das Frontier-Fallback in
+# proxy_openai(): wenn ein Upstream hier als down markiert ist, wird gar nicht erst
+# lokal versucht, sondern direkt auf das konfigurierte Frontier-Modell umgeleitet.
+_ollama_healthy:  dict[int, bool] = {0: True, 1: True}
 _sse_subscribers: list[asyncio.Queue] = []
 _model_baselines: dict = {}   # model → median_tps (in-memory cache)
 _load_shed_queue: asyncio.Queue | None = None   # set in run_proxies()
-_active_requests: dict = {}   # req_id → {model, client_ip, endpoint, t_start}
+_active_requests: dict = {}   # req_id → {model, client_ip, token_name, endpoint, t_start}
 _req_counter:     int  = 0
 
 
-def _req_start(model: str, client_ip: str, endpoint: str, upstream_idx: int | None = None) -> int:
+def _req_start(model: str, client_ip: str, token_name: str, endpoint: str, upstream_idx: int | None = None) -> int:
     global _req_counter
     _req_counter += 1
     rid = _req_counter
-    _active_requests[rid] = {"model": model, "client_ip": client_ip,
+    _active_requests[rid] = {"model": model, "client_ip": client_ip, "token_name": token_name,
                               "endpoint": endpoint, "t_start": time.time(),
                               "upstream": upstream_idx}
     return rid
@@ -327,6 +636,34 @@ async def _poll_gaming_mode():
                 # GPU-Host/gpu-agent nicht erreichbar (z.B. GPU-Host ausgeschaltet) → kein Gaming-Mode annehmen
                 _gaming_mode = False
                 _gaming_override = "auto"
+            await asyncio.sleep(10)
+
+
+async def _poll_comfyui_queue():
+    """Pollt ComfyUIs eigene Queue-API (GET /queue auf dem GPU-Host) und
+    setzt/hebt den Ollama-Lock automatisch, je nachdem ob ComfyUI gerade
+    etwas zu rendern hat ("läuft" = queue_running oder queue_pending nicht
+    leer). Greift nicht ein, wenn der Lock manuell gesetzt wurde (siehe
+    _ollama_lock_auto) - ein Admin, der bewusst sperrt, soll nicht durch eine
+    leere ComfyUI-Queue überstimmt werden."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        while True:
+            try:
+                r = await client.get(f"{COMFYUI_UPSTREAM}/queue")
+                r.raise_for_status()
+                data = r.json()
+                busy = bool(data.get("queue_running")) or bool(data.get("queue_pending"))
+            except Exception:
+                # ComfyUI/GPU-Host nicht erreichbar - keinen Lock auf Basis von
+                # Vermutungen setzen oder halten.
+                busy = False
+            if busy and not _ollama_locked:
+                await _set_ollama_lock(True, auto=True, reason="ComfyUI-Queue aktiv")
+            elif not busy and _ollama_locked and _ollama_lock_auto:
+                # auto=True hier ebenfalls, nur damit der Audit-Log-Eintrag korrekt als
+                # "auto" (nicht "admin") attribuiert wird - _ollama_lock_auto=True bei
+                # _ollama_locked=False ist unschädlich (wird nur geprüft, wenn beides gilt).
+                await _set_ollama_lock(False, auto=True, reason="ComfyUI-Queue leer")
             await asyncio.sleep(10)
 
 
@@ -386,7 +723,7 @@ async def _poll_model_catalog():
     damit ein kurzer Netzwerk-Hänger nicht sofort alle Routing-Entscheidungen
     verfälscht.
     """
-    global _model_catalog
+    global _model_catalog, _ollama_healthy
     async with httpx.AsyncClient(timeout=5.0) as client:
         while True:
             for idx, upstream in ((0, OLLAMA_UPSTREAM_0), (1, OLLAMA_UPSTREAM_1)):
@@ -395,8 +732,14 @@ async def _poll_model_catalog():
                     if r.status_code == 200:
                         names = {m.get("name") or m.get("model") for m in r.json().get("models", [])}
                         _model_catalog[idx] = {n for n in names if n}
+                        if not _ollama_healthy[idx]:
+                            logger.info(f"[fallback] Ollama-Upstream {idx} wieder erreichbar")
+                        _ollama_healthy[idx] = True
+                    else:
+                        _ollama_healthy[idx] = False
                 except Exception:
-                    pass  # letzten bekannten Katalog für diese GPU behalten
+                    # letzten bekannten Katalog für diese GPU behalten, aber als down markieren
+                    _ollama_healthy[idx] = False
             await asyncio.sleep(30)
 
 
@@ -415,7 +758,7 @@ async def _sse_broadcast_loop():
                 "gaming_override": _gaming_override,
                 "unread_count": _notify_unread,
                 "recent":       _db_get_recent(5),
-                "active":       [{"model": v["model"], "client_ip": v["client_ip"],
+                "active":       [{"model": v["model"], "client_ip": v["client_ip"], "token_name": v.get("token_name", ""),
                                   "endpoint": v["endpoint"],
                                   "elapsed_s": round(now - v["t_start"], 1)}
                                  for v in _active_requests.values()],
@@ -527,7 +870,7 @@ async def _update_client_profiles():
         await asyncio.sleep(21600)
         try:
             cur = _db().execute("""
-                SELECT client_ip,
+                SELECT token_name,
                        AVG(complexity_score) as avg_cx,
                        MAX(model) as top_model,
                        CAST(strftime('%H', ts) AS INTEGER) as hour,
@@ -536,13 +879,13 @@ async def _update_client_profiles():
                        COUNT(*) as total
                 FROM requests
                 WHERE date >= date('now', '-30 days')
-                GROUP BY client_ip
+                GROUP BY token_name
             """)
             now = datetime.datetime.now().isoformat(timespec="seconds")
             for row in cur.fetchall():
                 ip, avg_cx, top_model, hour, tool_rate, avg_msgs, total = row
                 _db().execute(
-                    "INSERT OR REPLACE INTO client_profiles VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT OR REPLACE INTO client_profiles (token_name, avg_complexity, top_model, peak_hour, tool_use_rate, avg_messages, total_requests, updated_at) VALUES (?,?,?,?,?,?,?,?)",
                     [ip, avg_cx, top_model, hour, tool_rate, avg_msgs, total, now]
                 )
             _db().commit()
@@ -687,9 +1030,11 @@ def _get_client_config(client_ip: str) -> dict:
     clients = _client_cfg.get("clients", {})
     return clients.get(client_ip, clients.get("default", {"limit": 5_000_000, "models": "*", "blocked": False}))
 
-def _get_budget(client_ip: str) -> int:
+def _get_budget(client_ip: str, is_frontier: bool = False) -> int:
     cfg = _get_client_config(client_ip)
-    return cfg.get("limit", 5_000_000)
+    limit_local = cfg.get("limit_local", -1)
+    limit_frontier = cfg.get("limit_frontier", 1_000_000)
+    return limit_frontier if is_frontier else limit_local
 
 def _is_blocked(client_ip: str) -> bool:
     cfg = _get_client_config(client_ip)
@@ -716,55 +1061,84 @@ def _get_frontier_target(model: str) -> tuple[str, str] | None:
     return None
 
 
-def _check_budget(client_ip: str) -> tuple[bool, int, int]:
+def _get_fallback_frontier(model: str) -> tuple[str, str, str] | None:
+    """Falls für `model` ein Frontier-Fallback konfiguriert ist: (frontier_model, base_url, api_key).
+    Sonst None (kein Fallback konfiguriert, oder das gemappte Modell hat keinen Frontier-Provider).
+    Ein "*"-Key in mapping wirkt als Catchall für jedes Modell ohne eigenen Eintrag
+    (exakter Modell-Match hat immer Vorrang vor dem Catchall)."""
+    if not _fallback_cfg.get("enabled", False):
+        return None
+    mapping = _fallback_cfg.get("mapping", {})
+    fb_model = mapping.get(model) or mapping.get("*")
+    if not fb_model:
+        return None
+    target = _get_frontier_target(fb_model)
+    if not target:
+        return None
+    return (fb_model, target[0], target[1])
+
+
+def _check_budget(token_name: str, is_frontier: bool = False) -> tuple[bool, int, int]:
     """Returns (allowed, used, limit)."""
     today = datetime.date.today().isoformat()
-    limit = _get_budget(client_ip)
+    limit = _get_budget(token_name, is_frontier)
+    col = "tokens_used_frontier" if is_frontier else "tokens_used_local"
     try:
         cur = _db().execute(
-            "SELECT tokens_used FROM budgets WHERE client_ip=? AND date=?", [client_ip, today]
+            f"SELECT {col} FROM budgets WHERE token_name=? AND date=?", [client_ip, today]
         )
         row = cur.fetchone()
         used = row[0] if row else 0
     except Exception:
         used = 0
-    return used < limit, used, limit
+    return limit == -1 or used < limit, used, limit
 
 
-def _add_budget_usage(client_ip: str, tokens: int):
+def _add_budget_usage(token_name: str, tokens: int, is_frontier: bool = False):
     today = datetime.date.today().isoformat()
+    col = "tokens_used_frontier" if is_frontier else "tokens_used_local"
     try:
         _db().execute(
-            "INSERT INTO budgets (client_ip, date, tokens_used) VALUES (?,?,?) "
-            "ON CONFLICT(client_ip, date) DO UPDATE SET tokens_used = tokens_used + ?",
-            [client_ip, today, tokens, tokens]
+            f"INSERT INTO budgets (token_name, date, tokens_used, {col}) VALUES (?,?,?,?) "
+            f"ON CONFLICT(token_name, date) DO UPDATE SET tokens_used = tokens_used + ?, {col} = {col} + ?",
+            [token_name, today, tokens, tokens, tokens, tokens]
         )
         _db().commit()
     except Exception:
         pass
 
 
-async def _check_budget_warnings(client_ip: str):
+async def _check_budget_warnings(token_name: str, is_frontier: bool = False):
     today = datetime.date.today().isoformat()
-    limit = _get_budget(client_ip)
+    limit = _get_budget(token_name, is_frontier)
+    if limit == -1: return
+    col = "tokens_used_frontier" if is_frontier else "tokens_used_local"
+    lbl = "Frontier-" if is_frontier else "Lokal-"
     try:
         cur = _db().execute(
-            "SELECT tokens_used FROM budgets WHERE client_ip=? AND date=?", [client_ip, today]
+            f"SELECT {col} FROM budgets WHERE token_name=? AND date=?", [client_ip, today]
         )
         row = cur.fetchone()
         used = row[0] if row else 0
         pct = used / limit * 100 if limit > 0 else 0
         if 80 <= pct < 100:
-            await _notify("budget_warning", f"⚠️ Budget-Warnung {client_ip}",
-                          f"{client_ip}: {pct:.0f}% des Tages-Budgets verbraucht ({used:,}/{limit:,} Tokens)")
+            await _notify("budget_warning", f"⚠️ {lbl}Budget-Warnung {client_ip}",
+                          f"{client_ip}: {pct:.0f}% des {lbl}Tages-Budgets verbraucht ({used:,}/{limit:,} Tokens)")
         elif pct >= 100:
-            await _notify("budget_exceeded", f"🚫 Budget überschritten {client_ip}",
-                          f"{client_ip}: Tages-Budget erschöpft ({limit:,} Tokens). Reset um Mitternacht.", "high")
+            await _notify("budget_exceeded", f"🚫 {lbl}Budget überschritten {client_ip}",
+                          f"{client_ip}: {lbl}Tages-Budget erschöpft ({limit:,} Tokens). Reset um Mitternacht.", "high")
     except Exception:
         pass
 
 
-def _check_tps_anomaly(model: str, tps: float | None) -> bool:
+def _check_tps_anomaly(model: str, tps: float | None, completion_tokens: int = 0) -> bool:
+    # Short completions are dominated by fixed overhead (dispatch, TTFT), so
+    # a handful of tokens naturally computes a low tps that isn't a real
+    # slowdown — agentic tool-calling loops fire many of these back to back
+    # and would otherwise spam a notification per call. Require enough
+    # tokens for the measurement to be meaningful.
+    if completion_tokens < 20:
+        return False
     if tps is None or tps <= 0:
         return False
     baseline = _model_baselines.get(model)
@@ -825,12 +1199,39 @@ def _get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _get_token_name(request: Request) -> str:
+    """Resolve the calling app's identity: bearer token if present (preferred,
+    stable across DHCP), otherwise fall back to client IP (legacy callers)."""
+    auth = request.headers.get("authorization", "")
+    if auth:
+        if not auth.lower().startswith("bearer "):
+            raise HTTPException(status_code=401, detail={"error": "invalid Authorization header"})
+        token = auth[7:].strip()
+        token_name = _tokens_cfg.get("tokens", {}).get(token)
+        if not token_name:
+            raise HTTPException(status_code=401, detail={"error": "invalid token"})
+        return token_name
+    return _get_client_ip(request)
+
+
 async def _guard_stop_all(request: Request):
     if _stop_all:
         raise HTTPException(
             status_code=503,
             detail={"error": "llmproxy is in stop-all maintenance mode — all inference blocked",
                     "stop_all": True, "retry_after": 60},
+            headers={"Retry-After": "60"},
+        )
+
+
+async def _guard_ollama_lock(request: Request):
+    """Blockiert native/Embeddings-Endpunkte hart, wenn der Ollama-Lock aktiv ist.
+    Diese Endpunkte kennen kein Frontier-Fallback (siehe fallback.yaml-Doku) -
+    /v1/chat/completions hat stattdessen eine eigene Prüfung mit Fallback-Versuch."""
+    if _ollama_locked:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "local Ollama access is disabled (ollama_locked)", "ollama_locked": True, "retry_after": 60},
             headers={"Retry-After": "60"},
         )
 
@@ -850,11 +1251,10 @@ async def _guard_gaming(request: Request):
         )
 
 
-async def _guard_budget(request: Request):
-    client_ip = _get_client_ip(request)
-    if _is_blocked(client_ip):
+def _guard_budget_sync(token_name: str, is_frontier: bool = False):
+    if _is_blocked(client_id):
         raise HTTPException(status_code=403, detail={"error": "client is blocked"})
-    allowed, used, limit = _check_budget(client_ip)
+    allowed, used, limit = _check_budget(client_id, is_frontier)
     if limit != -1 and not allowed:
         secs_until_midnight = int(
             (datetime.datetime.combine(datetime.date.today() + datetime.timedelta(days=1),
@@ -867,13 +1267,19 @@ async def _guard_budget(request: Request):
             headers={"Retry-After": str(secs_until_midnight)},
         )
 
+async def _guard_blocked(request: Request):
+    token_name = _get_token_name(request)
+    if _is_blocked(client_id):
+        raise HTTPException(status_code=403, detail={"error": "client is blocked"})
+
 # ── Native Ollama: /api/chat and /api/generate ─────────────────────────────────
 
-@app.post("/api/chat",     dependencies=[Depends(_guard_stop_all), Depends(_guard_gaming), Depends(_guard_budget)])
-@app.post("/api/generate", dependencies=[Depends(_guard_stop_all), Depends(_guard_gaming), Depends(_guard_budget)])
+@app.post("/api/chat",     dependencies=[Depends(_guard_stop_all), Depends(_guard_gaming), Depends(_guard_blocked), Depends(_guard_ollama_lock), Depends(_guard_safeguards)])
+@app.post("/api/generate", dependencies=[Depends(_guard_stop_all), Depends(_guard_gaming), Depends(_guard_blocked), Depends(_guard_ollama_lock), Depends(_guard_safeguards)])
 async def proxy_native(request: Request):
     path      = request.url.path
     client_ip = _get_client_ip(request)
+    token_name = _get_token_name(request)
     ua        = request.headers.get("user-agent", "")
     body      = await request.json()
     model     = body.get("model", "unknown")
@@ -881,16 +1287,20 @@ async def proxy_native(request: Request):
     num_ctx   = body.get("options", {}).get("num_ctx")
     cx_score  = _compute_complexity(body)
     pred_dur  = _predict_duration(model, cx_score)
+    
+    is_frontier = _get_frontier_target(model) is not None
+    _guard_budget_sync(token_name, is_frontier)
+
     model, _, target_gpu = _apply_router(model, cx_score)
     upstream_url = _select_upstream(model, target_gpu)
     upstream_idx = 1 if upstream_url == OLLAMA_UPSTREAM_1 else 0
 
-    client_cfg = _get_client_config(client_ip)
+    client_cfg = _get_client_config(token_name)
     if not _is_model_in_list(model, client_cfg.get("models", "*")):
         raise HTTPException(status_code=403, detail={"error": f"model {model} not allowed for client {client_ip}"})
 
     logger.info(f"[proxy] {request.method} {path} model={model} cx={cx_score} from={client_ip}")
-    _rid = _req_start(model, client_ip, path, upstream_idx)
+    _rid = _req_start(model, client_ip, token_name, path, upstream_idx)
     t0 = time.monotonic()
 
     prompt_text = (_extract_last_user_message(body) or body.get("prompt", ""))[:2000]
@@ -901,7 +1311,7 @@ async def proxy_native(request: Request):
             try:
                 resp = await _client.post(f"{upstream_url}{path}", json=body)
             except Exception:
-                _db_log_failure(model=model, client_ip=client_ip, endpoint=path,
+                _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint=path,
                                 status_code=500, failure_reason="upstream_error",
                                 last_user_message=prompt_text)
                 raise
@@ -913,15 +1323,15 @@ async def proxy_native(request: Request):
             resp_text = (data.get("response") or data.get("message", {}).get("content") or "")[:2000]
             _db_insert_request(model=model, prompt_tokens=pt, completion_tokens=ct,
                                total_tokens=pt+ct, duration_s=round(duration_s,3),
-                               tokens_per_second=tps, client_ip=client_ip, user_agent=ua,
+                               tokens_per_second=tps, client_ip=client_ip, token_name=token_name, user_agent=ua,
                                endpoint=path, stream=0, num_ctx=num_ctx,
                                complexity_score=cx_score, predicted_duration_s=pred_dur,
-                               status_code=resp.status_code,
+                               status_code=resp.status_code, is_frontier=int(is_frontier),
                                hostname=hostname, prompt_text=prompt_text, response_text=resp_text)
-            _add_budget_usage(client_ip, pt+ct)
-            await _check_budget_warnings(client_ip)
-            if _check_tps_anomaly(model, tps):
-                _db_log_failure(model=model, client_ip=client_ip, endpoint=path,
+            _add_budget_usage(token_name, pt+ct, is_frontier=is_frontier)
+            await _check_budget_warnings(token_name, is_frontier=is_frontier)
+            if _check_tps_anomaly(model, tps, ct):
+                _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint=path,
                                 status_code=200, failure_reason="tps_anomaly",
                                 last_user_message=f"tps={tps} baseline={_model_baselines.get(model)}")
                 await _notify("tps_anomaly", f"⚠️ TPS-Anomalie: {model}",
@@ -954,7 +1364,7 @@ async def proxy_native(request: Request):
                         except (json.JSONDecodeError, ValueError):
                             pass
         except Exception:
-            _db_log_failure(model=model, client_ip=client_ip, endpoint=path,
+            _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint=path,
                             status_code=500, failure_reason="upstream_error",
                             last_user_message=prompt_text)
             raise
@@ -966,13 +1376,13 @@ async def proxy_native(request: Request):
         _db_insert_request(model=model, prompt_tokens=pt, completion_tokens=ct,
                            total_tokens=pt+ct, duration_s=round(duration_s,3),
                            tokens_per_second=tps, ttft_s=round(ttft_s,3) if ttft_s else None,
-                           client_ip=client_ip, user_agent=ua, endpoint=path, stream=1,
+                           client_ip=client_ip, token_name=token_name, user_agent=ua, endpoint=path, stream=1,
                            num_ctx=num_ctx, complexity_score=cx_score, predicted_duration_s=pred_dur,
-                           hostname=hostname, prompt_text=prompt_text, response_text=resp_text)
-        _add_budget_usage(client_ip, pt+ct)
-        await _check_budget_warnings(client_ip)
-        if _check_tps_anomaly(model, tps):
-            _db_log_failure(model=model, client_ip=client_ip, endpoint=path,
+                           hostname=hostname, prompt_text=prompt_text, response_text=resp_text, is_frontier=int(is_frontier))
+        _add_budget_usage(token_name, pt+ct, is_frontier=is_frontier)
+        await _check_budget_warnings(token_name, is_frontier=is_frontier)
+        if _check_tps_anomaly(model, tps, ct):
+            _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint=path,
                             status_code=200, failure_reason="tps_anomaly",
                             last_user_message=f"tps={tps} baseline={_model_baselines.get(model)}")
             await _notify("tps_anomaly", f"⚠️ TPS-Anomalie: {model}",
@@ -1047,11 +1457,15 @@ def _openai_to_native_chat(body: dict) -> dict:
         else:
             messages.append(msg)
 
+    model_name = body.get("model", "")
+    model_options = dict(DEFAULT_OLLAMA_OPTIONS)
+    if model_name in MODEL_NUM_CTX_OVERRIDES:
+        model_options["num_ctx"] = MODEL_NUM_CTX_OVERRIDES[model_name]
     native: dict = {
-        "model":   body.get("model", ""),
+        "model":   model_name,
         "messages": messages,
         "stream":  body.get("stream", False),
-        "options": {**DEFAULT_OLLAMA_OPTIONS, **body.get("options", {})},
+        "options": {**model_options, **body.get("options", {})},
     }
     if body.get("tools"):
         native["tools"] = body["tools"]
@@ -1066,6 +1480,27 @@ def _openai_to_native_chat(body: dict) -> dict:
         s = body["stop"]
         opts["stop"] = [s] if isinstance(s, str) else s
     return native
+
+
+def _repair_json_arguments(s: str, max_attempts: int = 5) -> str:
+    """Best-effort repair for malformed tool-call arguments JSON coming
+    straight from the model — heavily quantized models routinely drop a
+    comma between fields, especially deep into a long context. Returns a
+    guaranteed-valid re-serialized JSON string on success, or the original
+    string unchanged if it was already valid or repair didn't converge."""
+    attempt = s
+    for _ in range(max_attempts):
+        try:
+            parsed = json.loads(attempt)
+            return json.dumps(parsed) if attempt is not s else s
+        except json.JSONDecodeError as e:
+            if "Expecting ',' delimiter" in e.msg and e.pos > 0:
+                attempt = attempt[:e.pos] + "," + attempt[e.pos:]
+                continue
+            break
+    if attempt is not s:
+        logger.warning(f"[proxy] could not repair malformed tool-call arguments JSON: {s[:200]!r}")
+    return s
 
 
 def _native_to_openai(data: dict, model: str, stream: bool = False,
@@ -1084,7 +1519,7 @@ def _native_to_openai(data: dict, model: str, stream: bool = False,
             "type": "function",
             "function": {
                 "name": tc.get("function", {}).get("name", ""),
-                "arguments": args if isinstance(args, str) else json.dumps(args),
+                "arguments": _repair_json_arguments(args) if isinstance(args, str) else json.dumps(args),
             },
         }
         if stream:
@@ -1112,9 +1547,28 @@ def _native_to_openai(data: dict, model: str, stream: bool = False,
     }
 
 
-async def _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx_score, base_url, api_key):
+async def _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx_score, base_url, api_key, token_name=None):
+    client_id = client_id or client_ip
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     prompt_text = _extract_last_user_message(body)[:2000]
+
+    is_anthropic = "anthropic/" in model or "claude-" in model
+    if is_anthropic:
+        messages = body.get("messages", [])
+        if messages and isinstance(messages, list):
+            for msg in messages:
+                if msg.get("role") == "system":
+                    content = msg.get("content", "")
+                    if _text_content_len(content) > 1024:
+                        if isinstance(content, str):
+                            msg["content"] = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+                        elif isinstance(content, list):
+                            for block in reversed(content):
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    block["cache_control"] = {"type": "ephemeral"}
+                                    break
+                        break
+
     hostname = _resolve_hostname(client_ip)
     pred_dur = _predict_duration(model, cx_score)
     num_messages = len(body.get("messages", []))
@@ -1128,13 +1582,14 @@ async def _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx
         _db_insert_request(
             model=model, prompt_tokens=pt, completion_tokens=ct, total_tokens=pt+ct,
             duration_s=round(dur, 3), tokens_per_second=tps, ttft_s=round(ttft, 3) if ttft else None,
-            client_ip=client_ip, user_agent=ua, endpoint="/v1/chat/completions",
+            client_ip=client_ip, token_name=token_name, user_agent=ua, endpoint="/v1/chat/completions",
             stream=int(stream), num_messages=num_messages, has_tools=int(has_tools),
             num_tool_calls=ntc, num_ctx=None, status_code=status,
             complexity_score=cx_score, predicted_duration_s=pred_dur,
-            routed_from=None, hostname=hostname, prompt_text=prompt_text, response_text=resp_text[:2000]
+            routed_from=None, hostname=hostname, prompt_text=prompt_text, response_text=resp_text[:2000],
+            is_frontier=1
         )
-        _add_budget_usage(client_ip, pt+ct)
+        _add_budget_usage(token_name, pt+ct, is_frontier=True)
         return tps
 
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
@@ -1143,13 +1598,13 @@ async def _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx
         try:
             resp = await _client.post(endpoint, json=body, headers=headers)
         except Exception:
-            _db_log_failure(model=model, client_ip=client_ip, endpoint="/v1/chat/completions", status_code=500, failure_reason="frontier_upstream_error", last_user_message=prompt_text)
+            _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint="/v1/chat/completions", status_code=500, failure_reason="frontier_upstream_error", last_user_message=prompt_text)
             _req_end(_rid)
             raise
         dur = time.monotonic() - t0
         _req_end(_rid)
         if resp.status_code != 200:
-            _db_log_failure(model=model, client_ip=client_ip, endpoint="/v1/chat/completions", status_code=resp.status_code, failure_reason="frontier_upstream_error", last_user_message=prompt_text)
+            _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint="/v1/chat/completions", status_code=resp.status_code, failure_reason="frontier_upstream_error", last_user_message=prompt_text)
             return Response(content=resp.content, media_type="application/json", status_code=resp.status_code)
         data = resp.json()
         usage = data.get("usage", {})
@@ -1163,7 +1618,7 @@ async def _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx
             resp_text = msg.get("content", "")
             ntc = len(msg.get("tool_calls", []))
         _log(pt, ct, dur, status=200, ntc=ntc, resp_text=resp_text)
-        await _check_budget_warnings(client_ip)
+        await _check_budget_warnings(token_name, is_frontier=True)
         return Response(content=resp.content, media_type="application/json", status_code=resp.status_code)
         
     body["stream_options"] = {"include_usage": True}
@@ -1202,28 +1657,29 @@ async def _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx
                         except Exception:
                             pass
         except Exception:
-            _db_log_failure(model=model, client_ip=client_ip, endpoint="/v1/chat/completions", status_code=500, failure_reason="frontier_upstream_error", last_user_message=prompt_text)
+            _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint="/v1/chat/completions", status_code=500, failure_reason="frontier_upstream_error", last_user_message=prompt_text)
             raise
         finally:
             _req_end(_rid)
         dur = time.monotonic() - t0
         resp_text = "".join(content_acc)
         _log(pt_acc, ct_acc, dur, ttft=ttft_s, ntc=ntc_acc, resp_text=resp_text)
-        await _check_budget_warnings(client_ip)
+        await _check_budget_warnings(token_name, is_frontier=True)
         
     return StreamingResponse(sse(), media_type="text/event-stream")
 
 
-@app.post("/v1/chat/completions", dependencies=[Depends(_guard_stop_all), Depends(_guard_gaming), Depends(_guard_budget)])
+@app.post("/v1/chat/completions", dependencies=[Depends(_guard_stop_all), Depends(_guard_gaming), Depends(_guard_blocked), Depends(_guard_safeguards)])
 async def proxy_openai(request: Request):
     client_ip = _get_client_ip(request)
+    token_name = _get_token_name(request)
     ua        = request.headers.get("user-agent", "")
     body      = await request.json()
     model     = body.get("model", "unknown")
     stream    = body.get("stream", False)
     cx_score  = _compute_complexity(body)
 
-    client_cfg = _get_client_config(client_ip)
+    client_cfg = _get_client_config(token_name)
     frontier = _get_frontier_target(model)
     
     if frontier:
@@ -1232,11 +1688,13 @@ async def proxy_openai(request: Request):
         allowed_frontier = client_cfg.get("frontier_models", "*")
         if not _is_model_in_list(model, allowed_frontier):
             raise HTTPException(status_code=403, detail={"error": f"frontier model {model} not allowed for client {client_ip}"})
-        return await _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx_score, frontier[0], frontier[1])
+        _guard_budget_sync(token_name, is_frontier=True)
+        return await _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx_score, frontier[0], frontier[1], token_name=client_id)
     else:
         allowed_local = client_cfg.get("models", "*")
         if not _is_model_in_list(model, allowed_local):
             raise HTTPException(status_code=403, detail={"error": f"local model {model} not allowed for client {client_ip}"})
+        _guard_budget_sync(token_name, is_frontier=False)
 
     # Auto-router
     routed_model, routed_from, target_gpu = _apply_router(model, cx_score)
@@ -1245,6 +1703,37 @@ async def proxy_openai(request: Request):
         model = routed_model
     upstream_url = _select_upstream(model, target_gpu)
     upstream_idx = 1 if upstream_url == OLLAMA_UPSTREAM_1 else 0
+
+    # Ollama-Lock: manueller Schalter (config/ollama_lock.yaml), unabhängig vom
+    # Health-Check unten - Ollama ist hier tatsächlich erreichbar, der Zugriff ist nur
+    # bewusst gesperrt (z.B. um GPUs für ComfyUI freizuräumen). Ohne diesen expliziten
+    # Block würde die Anfrage unten einfach normal durchlaufen, weil _ollama_healthy
+    # weiterhin True ist.
+    if _ollama_locked:
+        fb = _get_fallback_frontier(model)
+        if fb and client_cfg.get("frontier_allowed", False):
+            fb_model, fb_base_url, fb_api_key = fb
+            logger.warning(f"[ollama-lock] lokaler Zugriff gesperrt → {model} auf Frontier {fb_model} umgeleitet")
+            _guard_budget_sync(token_name, is_frontier=True)
+            body["model"] = fb_model
+            return await _proxy_frontier_openai(request, body, fb_model, stream, client_ip, ua, cx_score, fb_base_url, fb_api_key, token_name=client_id)
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "local Ollama access is disabled (ollama_locked)", "ollama_locked": True, "retry_after": 60},
+            headers={"Retry-After": "60"},
+        )
+
+    # Ollama-Fallback (proaktiv): der Health-Check in _poll_model_catalog() hat diesen
+    # Upstream bereits als down markiert → gar nicht erst lokal versuchen, sondern direkt
+    # auf das für `model` konfigurierte Frontier-Modell umleiten (config/fallback.yaml).
+    if not _ollama_healthy.get(upstream_idx, True):
+        fb = _get_fallback_frontier(model)
+        if fb and client_cfg.get("frontier_allowed", False):
+            fb_model, fb_base_url, fb_api_key = fb
+            logger.warning(f"[fallback] Ollama-Upstream {upstream_idx} down (health-check) → {model} auf Frontier {fb_model} umgeleitet")
+            _guard_budget_sync(token_name, is_frontier=True)
+            body["model"] = fb_model
+            return await _proxy_frontier_openai(request, body, fb_model, stream, client_ip, ua, cx_score, fb_base_url, fb_api_key, token_name=client_id)
 
     native_body   = _openai_to_native_chat(body)
     num_messages  = len(native_body.get("messages", []))
@@ -1263,7 +1752,7 @@ async def proxy_openai(request: Request):
     req_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     req_ts = int(time.time())
     t0     = time.monotonic()
-    _rid   = _req_start(model, client_ip, "/v1/chat/completions", upstream_idx)
+    _rid   = _req_start(model, client_ip, token_name, "/v1/chat/completions", upstream_idx)
 
     def _log(pt, ct, dur, status=200, ttft=None, ntc=0, resp_text=""):
         tps = round(ct / dur, 1) if dur > 0 and ct > 0 else None
@@ -1271,28 +1760,41 @@ async def proxy_openai(request: Request):
             model=model, prompt_tokens=pt, completion_tokens=ct, total_tokens=pt+ct,
             duration_s=round(dur, 3), tokens_per_second=tps,
             ttft_s=round(ttft, 3) if ttft else None,
-            client_ip=client_ip, user_agent=ua, endpoint="/v1/chat/completions",
+            client_ip=client_ip, token_name=token_name, user_agent=ua, endpoint="/v1/chat/completions",
             stream=int(stream), num_messages=num_messages, has_tools=int(has_tools),
             num_tool_calls=ntc, num_ctx=num_ctx, status_code=status,
             complexity_score=cx_score, predicted_duration_s=pred_dur,
-            routed_from=routed_from,
+            routed_from=routed_from, is_frontier=0,
             hostname=hostname, prompt_text=prompt_text, response_text=resp_text[:2000],
         )
-        _add_budget_usage(client_ip, pt+ct)
+        _add_budget_usage(token_name, pt+ct, is_frontier=False)
         return tps
 
     if not stream:
         try:
             try:
                 resp = await _client.post(f"{upstream_url}/api/chat", json=native_body)
-            except Exception:
-                _db_log_failure(model=model, client_ip=client_ip, endpoint="/v1/chat/completions",
+            except Exception as e:
+                # Ollama-Fallback (reaktiv): der Health-Check hat diesen Ausfall noch nicht
+                # gesehen (Poll läuft alle 30s) — bei einem echten Verbindungsfehler sofort
+                # auf Frontier umleiten, statt bis zum nächsten Poll auf dem toten Upstream
+                # zu scheitern. Markiert den Upstream zusätzlich sofort als down, damit
+                # nachfolgende Requests den proaktiven Pfad oben nehmen.
+                _ollama_healthy[upstream_idx] = False
+                fb = _get_fallback_frontier(model)
+                if fb and client_cfg.get("frontier_allowed", False):
+                    fb_model, fb_base_url, fb_api_key = fb
+                    logger.warning(f"[fallback] Ollama-Upstream {upstream_idx} nicht erreichbar ({e}) → {model} auf Frontier {fb_model} umgeleitet")
+                    _guard_budget_sync(token_name, is_frontier=True)
+                    body["model"] = fb_model
+                    return await _proxy_frontier_openai(request, body, fb_model, stream, client_ip, ua, cx_score, fb_base_url, fb_api_key, token_name=client_id)
+                _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint="/v1/chat/completions",
                                 status_code=500, failure_reason="upstream_error",
                                 last_user_message=_extract_last_user_message(body))
                 raise
             duration_s = time.monotonic() - t0
             if resp.status_code != 200:
-                _db_log_failure(model=model, client_ip=client_ip, endpoint="/v1/chat/completions",
+                _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint="/v1/chat/completions",
                                 status_code=resp.status_code, failure_reason="upstream_error",
                                 last_user_message=_extract_last_user_message(body))
                 return Response(content=resp.content, media_type="application/json", status_code=resp.status_code)
@@ -1305,14 +1807,14 @@ async def proxy_openai(request: Request):
             tps   = _log(pt, ct, duration_s, ntc=ntc, resp_text=resp_text)
 
             if has_tools and ntc == 0:
-                _db_log_failure(model=model, client_ip=client_ip, endpoint="/v1/chat/completions",
+                _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint="/v1/chat/completions",
                                 status_code=200, failure_reason="tool_ignored",
                                 last_user_message=prompt_text)
-            if _check_tps_anomaly(model, tps):
+            if _check_tps_anomaly(model, tps, ct):
                 await _notify("tps_anomaly", f"⚠️ TPS-Anomalie: {model}",
                               f"{model}: {tps} tps (Baseline: {_model_baselines.get(model):.1f})")
 
-            await _check_budget_warnings(client_ip)
+            await _check_budget_warnings(token_name)
             compat = _native_to_openai(data, model, stream=False, req_id=req_id, req_ts=req_ts)
             headers = {}
             if routed_from:
@@ -1345,7 +1847,7 @@ async def proxy_openai(request: Request):
                     except json.JSONDecodeError:
                         continue
                     if d.get("error"):
-                        yield f"data: {{\"error\":\"{d['error']}\"}}\n\n".encode()
+                        yield f"data: {json.dumps({'error': d['error']})}\n\n".encode()
                         return
                     if d.get("done"):
                         pt_acc = d.get("prompt_eval_count", pt_acc)
@@ -1380,7 +1882,7 @@ async def proxy_openai(request: Request):
                 yield b"data: [DONE]\n\n"
         except Exception as e:
             logger.error(f"[proxy] stream error: {e}")
-            _db_log_failure(model=model, client_ip=client_ip, endpoint="/v1/chat/completions",
+            _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint="/v1/chat/completions",
                             status_code=500, failure_reason="upstream_error",
                             last_user_message=prompt_text)
             raise
@@ -1391,13 +1893,13 @@ async def proxy_openai(request: Request):
         resp_text = "".join(content_acc)
         tps = _log(pt_acc, ct_acc, dur, ttft=ttft_s, ntc=ntc_acc, resp_text=resp_text)
         if has_tools and ntc_acc == 0:
-            _db_log_failure(model=model, client_ip=client_ip, endpoint="/v1/chat/completions",
+            _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint="/v1/chat/completions",
                             status_code=200, failure_reason="tool_ignored",
                             last_user_message=prompt_text)
-        if _check_tps_anomaly(model, tps):
+        if _check_tps_anomaly(model, tps, ct_acc):
             await _notify("tps_anomaly", f"⚠️ TPS-Anomalie: {model}",
                           f"{model}: {tps} tps (Baseline: {_model_baselines.get(model):.1f})")
-        await _check_budget_warnings(client_ip)
+        await _check_budget_warnings(token_name)
 
     headers = {"X-LLM-Routed-From": routed_from} if routed_from else {}
     return StreamingResponse(sse(), media_type="text/event-stream", headers=headers)
@@ -1405,15 +1907,16 @@ async def proxy_openai(request: Request):
 
 # ── Embeddings ─────────────────────────────────────────────────────────────────
 
-@app.post("/v1/embeddings")
-@app.post("/api/embeddings")
+@app.post("/v1/embeddings", dependencies=[Depends(_guard_ollama_lock)])
+@app.post("/api/embeddings", dependencies=[Depends(_guard_ollama_lock)])
 async def proxy_embeddings(request: Request):
     path      = request.url.path
     client_ip = _get_client_ip(request)
+    token_name = _get_token_name(request)
     ua        = request.headers.get("user-agent", "")
     body      = await request.json()
     model     = body.get("model", "unknown")
-    client_cfg = _get_client_config(client_ip)
+    client_cfg = _get_client_config(token_name)
     if not _is_model_in_list(model, client_cfg.get("models", "*")):
         raise HTTPException(status_code=403, detail={"error": f"model {model} not allowed for client {client_ip}"})
 
@@ -1435,9 +1938,9 @@ async def proxy_embeddings(request: Request):
     usage = data.get("usage", {})
     pt    = usage.get("prompt_tokens", data.get("prompt_eval_count", 0))
     _db_insert_request(model=model, prompt_tokens=pt, completion_tokens=0, total_tokens=pt,
-                       duration_s=round(duration_s,3), client_ip=client_ip, user_agent=ua,
+                       duration_s=round(duration_s,3), client_ip=client_ip, token_name=token_name, user_agent=ua,
                        endpoint=path, status_code=resp.status_code)
-    _add_budget_usage(client_ip, pt)
+    _add_budget_usage(token_name, pt)
     return Response(content=resp.content, media_type="application/json", status_code=resp.status_code)
 
 
@@ -1456,18 +1959,26 @@ async def merged_tags():
     UPSTREAM_0 installierten Modelle - alles, was ausschliesslich auf der
     zweiten GPU liegt, fehlte bisher in der über den Proxy sichtbaren Liste.
     """
+    async def _fetch(client, upstream):
+        try:
+            r = await client.get(f"{upstream}/api/tags")
+            if r.status_code == 200:
+                return r.json().get("models", [])
+        except Exception:
+            pass
+        return []
+
     merged: dict[str, dict] = {}
     async with httpx.AsyncClient(timeout=5.0) as client:
-        for upstream in (OLLAMA_UPSTREAM_0, OLLAMA_UPSTREAM_1):
-            try:
-                r = await client.get(f"{upstream}/api/tags")
-                if r.status_code == 200:
-                    for m in r.json().get("models", []):
-                        name = m.get("name") or m.get("model")
-                        if name and name not in merged:
-                            merged[name] = m
-            except Exception:
-                continue
+        # Parallel statt sequentiell - ist ein Upstream down, verdoppelt sich
+        # sonst die Latenz dieses Endpunkts (voller Timeout je Upstream), was
+        # Caller mit knapperem eigenen Timeout (z.B. dashboard/app.py) reissen kann.
+        results = await asyncio.gather(*(_fetch(client, u) for u in (OLLAMA_UPSTREAM_0, OLLAMA_UPSTREAM_1)))
+    for models in results:
+        for m in models:
+            name = m.get("name") or m.get("model")
+            if name and name not in merged:
+                merged[name] = m
     return {"models": list(merged.values())}
 
 
@@ -1512,7 +2023,8 @@ async def health():
     except Exception:
         ollama_ok = False
     return {"status": "ok", "version": __version__, "ollama_up": ollama_ok,
-            "gaming_mode": _gaming_mode, "stop_all": _stop_all}
+            "gaming_mode": _gaming_mode, "stop_all": _stop_all,
+            "ollama_locked": _ollama_locked, "ollama_lock_auto": _ollama_lock_auto}
 
 
 @app.get("/health/recent")
@@ -1526,7 +2038,7 @@ async def status():
     # Budget summary
     today = datetime.date.today().isoformat()
     try:
-        cur = _db().execute("SELECT client_ip, tokens_used FROM budgets WHERE date=?", [today])
+        cur = _db().execute("SELECT token_name, tokens_used FROM budgets WHERE date=?", [today])
         budgets = {r[0]: {"used": r[1], "limit": _get_budget(r[0])} for r in cur.fetchall()}
     except Exception:
         budgets = {}
@@ -1535,6 +2047,8 @@ async def status():
         "models":       _loaded_models,
         "gaming_mode":  _gaming_mode,
         "stop_all":     _stop_all,
+        "ollama_locked": _ollama_locked,
+        "ollama_lock_auto": _ollama_lock_auto,
         "recent":       recent,
         "budgets":      budgets,
     }
@@ -1568,7 +2082,7 @@ async def status_stream(request: Request):
 async def budget_status():
     today = datetime.date.today().isoformat()
     try:
-        cur = _db().execute("SELECT client_ip, tokens_used FROM budgets WHERE date=?", [today])
+        cur = _db().execute("SELECT token_name, tokens_used FROM budgets WHERE date=?", [today])
         return {
             r[0]: {"used": r[1], "limit": _get_budget(r[0]),
                    "pct": round(r[1] / _get_budget(r[0]) * 100, 1) if _get_budget(r[0]) > 0 else 0}
@@ -1639,6 +2153,7 @@ async def notifications_read_all():
 
 @app.post("/maintenance/logging")
 async def set_logging_config(request: Request):
+    _check_admin(request)
     global _logging_cfg
     try:
         data = await request.json()
@@ -1646,21 +2161,25 @@ async def set_logging_config(request: Request):
         _logging_cfg["enabled"] = enabled
         with open(CONFIG_DIR / "logging.yaml", "w") as f:
             yaml.safe_dump(_logging_cfg, f)
+        _log_admin_action("logging", "admin", _get_client_ip(request), _get_token_name(request), f"enabled={enabled}")
         return {"ok": True, "enabled": enabled}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 @app.get("/maintenance/logging")
-async def get_logging_config():
+async def get_logging_config(request: Request):
+    _check_admin(request)
     return {"enabled": _logging_cfg.get("enabled", True)}
 
 
 @app.get("/admin/clients")
-async def get_clients_config():
+async def get_clients_config(request: Request):
+    _check_admin(request)
     return _client_cfg
 
 @app.post("/admin/clients")
 async def set_clients_config(request: Request):
+    _check_admin(request)
     global _client_cfg
     try:
         data = await request.json()
@@ -1671,12 +2190,32 @@ async def set_clients_config(request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+@app.get("/admin/tokens")
+async def get_tokens_config(request: Request):
+    _check_admin(request)
+    return _tokens_cfg
+
+@app.post("/admin/tokens")
+async def set_tokens_config(request: Request):
+    _check_admin(request)
+    global _tokens_cfg
+    try:
+        data = await request.json()
+        _tokens_cfg = data
+        with open(CONFIG_DIR / "tokens.yaml", "w") as f:
+            yaml.safe_dump(_tokens_cfg, f)
+        return {"ok": True, "config": {"tokens": list(_tokens_cfg.get("tokens", {}).values())}}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.get("/admin/frontier")
-async def get_frontier_config():
+async def get_frontier_config(request: Request):
+    _check_admin(request)
     return _frontier_cfg
 
 @app.post("/admin/frontier")
 async def set_frontier_config(request: Request):
+    _check_admin(request)
     global _frontier_cfg
     try:
         data = await request.json()
@@ -1687,15 +2226,84 @@ async def set_frontier_config(request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+@app.get("/admin/fallback")
+async def get_fallback_config(request: Request):
+    _check_admin(request)
+    return {**_fallback_cfg, "ollama_healthy": _ollama_healthy}
+
+@app.post("/admin/fallback")
+async def set_fallback_config(request: Request):
+    _check_admin(request)
+    global _fallback_cfg
+    try:
+        data = await request.json()
+        _fallback_cfg = data
+        with open(CONFIG_DIR / "fallback.yaml", "w") as f:
+            yaml.safe_dump(_fallback_cfg, f)
+        return {"ok": True, "config": _fallback_cfg}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+
+@app.get("/admin/guardrails")
+async def get_guardrails_config(request: Request):
+    _check_admin(request)
+    return _guardrails_cfg
+
+@app.post("/admin/guardrails")
+async def set_guardrails_config(request: Request):
+    _check_admin(request)
+    global _guardrails_cfg
+    try:
+        data = await request.json()
+        _guardrails_cfg = data
+        with open(CONFIG_DIR / "guardrails.yaml", "w") as f:
+            yaml.safe_dump(_guardrails_cfg, f)
+        return {"ok": True, "config": _guardrails_cfg}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/admin/unban")
+async def unban_token(request: Request, token_name: str):
+    _check_admin(request)
+    if token_name in _fail2ban_cfg.get("bans", {}):
+        del _fail2ban_cfg["bans"][token_name]
+        with open(CONFIG_DIR / "fail2ban.yaml", "w") as f:
+            yaml.safe_dump(_fail2ban_cfg, f)
+        # Clear strikes
+        if hasattr(_record_violation, "strikes") and token_name in _record_violation.strikes:
+            del _record_violation.strikes[token_name]
+        _log_admin_action("unban", "admin", _get_client_ip(request), _get_token_name(request), f"unbanned {token_name}")
+        return {"ok": True, "unbanned": token_name}
+    return {"ok": False, "error": "Token not banned"}
+
+@app.get("/admin/actions")
+async def get_admin_actions(request: Request, limit: int = 100):
+    """Audit-Trail für /maintenance/*-Aktionen — wer/was/wann hat den Proxy
+    gesperrt, VRAM geleert, etc. `source` unterscheidet 'admin' (per
+    X-Admin-Token) von 'auto' (ComfyUI-Queue-Poller)."""
+    _check_admin(request)
+    limit = max(1, min(limit, 500))
+    try:
+        cur = _db().execute(
+            "SELECT ts, action, source, client_ip, detail FROM admin_actions "
+            "ORDER BY id DESC LIMIT ?", [limit]
+        )
+        rows = [dict(zip(("ts", "action", "source", "client_ip", "detail"), r)) for r in cur.fetchall()]
+        return {"actions": rows}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.post("/maintenance/cleanup")
-async def maintenance_cleanup(full: bool = False):
+async def maintenance_cleanup(request: Request, full: bool = False):
     """Delete old log rows and reclaim disk space.
 
     full=False (default): delete rows older than LOG_RETENTION_DAYS.
     full=True: purge ALL rows from failures/notifications/requests.
     """
+    _check_admin(request)
     global _notify_unread
     try:
         size_before = DB_PATH.stat().st_size
@@ -1708,16 +2316,21 @@ async def maintenance_cleanup(full: bool = False):
             deleted["notifications"] = cur.rowcount
             cur = db.execute("DELETE FROM requests")
             deleted["requests"] = cur.rowcount
+            cur = db.execute("DELETE FROM guardrail_events")
+            deleted["guardrail_events"] = cur.rowcount
         else:
             cur = db.execute("DELETE FROM failures WHERE ts < datetime('now', ?)",
-                              [f"-{LOG_RETENTION_DAYS['failures']} days"])
+                              [f"-{LOG_RETENTION_DAYS.get('failures', 7)} days"])
             deleted["failures"] = cur.rowcount
             cur = db.execute("DELETE FROM notifications WHERE ts < datetime('now', ?)",
-                              [f"-{LOG_RETENTION_DAYS['notifications']} days"])
+                              [f"-{LOG_RETENTION_DAYS.get('notifications', 7)} days"])
             deleted["notifications"] = cur.rowcount
             cur = db.execute("DELETE FROM requests WHERE date < date('now', ?)",
-                              [f"-{LOG_RETENTION_DAYS['requests']} days"])
+                              [f"-{LOG_RETENTION_DAYS.get('requests', 30)} days"])
             deleted["requests"] = cur.rowcount
+            cur = db.execute("DELETE FROM guardrail_events WHERE ts < datetime('now', ?)",
+                              [f"-{LOG_RETENTION_DAYS.get('guardrail_events', 7)} days"])
+            deleted["guardrail_events"] = cur.rowcount
         db.commit()
         db.execute("VACUUM")
 
@@ -1725,6 +2338,7 @@ async def maintenance_cleanup(full: bool = False):
         _notify_unread = cur.fetchone()[0]
 
         size_after = DB_PATH.stat().st_size
+        _log_admin_action("cleanup", "admin", _get_client_ip(request), _get_token_name(request), f"full={full} deleted={deleted}")
         return {
             "ok": True,
             "deleted": deleted,
@@ -1736,11 +2350,12 @@ async def maintenance_cleanup(full: bool = False):
 
 
 @app.post("/maintenance/strip-prompts")
-async def maintenance_strip_prompts(older_than_days: int = 7):
+async def maintenance_strip_prompts(request: Request, older_than_days: int = 7):
     """Löscht prompt_text/response_text aus älteren Einträgen (nach Auswertung).
 
     Spart Speicher ohne Performance-Metriken zu verlieren.
     """
+    _check_admin(request)
     cutoff = (datetime.date.today() - datetime.timedelta(days=older_than_days)).isoformat()
     try:
         db = _db()
@@ -1751,13 +2366,13 @@ async def maintenance_strip_prompts(older_than_days: int = 7):
         )
         db.commit()
         db.execute("VACUUM")
+        _log_admin_action("strip-prompts", "admin", _get_client_ip(request), _get_token_name(request), f"stripped_rows={cur.rowcount} cutoff={cutoff}")
         return {"ok": True, "stripped_rows": cur.rowcount, "cutoff": cutoff}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-@app.post("/maintenance/evict-models")
-async def maintenance_evict_models():
+async def _evict_loaded_models(tag: str = "evict-models") -> list[str]:
     """Force-evict all currently loaded models from VRAM right now
     (same keep_alive=0 trick as the idle-eviction loop, but on demand)."""
     evicted = []
@@ -1771,15 +2386,24 @@ async def maintenance_evict_models():
                 await client.post(f"{upstream}/api/generate", json={"model": name, "keep_alive": 0})
                 evicted.append(name)
             except Exception as e:
-                logger.error(f"[evict-models] failed to evict {name}: {e}")
+                logger.error(f"[{tag}] failed to evict {name}: {e}")
+    return evicted
+
+
+@app.post("/maintenance/evict-models")
+async def maintenance_evict_models(request: Request):
+    _check_admin(request)
+    evicted = await _evict_loaded_models("evict-models")
+    _log_admin_action("evict-models", "admin", _get_client_ip(request), _get_token_name(request), f"evicted={evicted}")
     return {"ok": True, "evicted": evicted}
 
 
 @app.post("/maintenance/force-purge")
-async def maintenance_force_purge():
+async def maintenance_force_purge(request: Request):
     """Zweistufiger Hard-Reset: erst soft evict (keep_alive=0), dann killall llama-server.
     Nützlich wenn eine laufende Inference nicht reagiert.
     Ollama startet llama-server beim nächsten Request automatisch neu."""
+    _check_admin(request)
     import asyncio
 
     # Schritt 1: Soft evict via keep_alive=0
@@ -1818,13 +2442,15 @@ async def maintenance_force_purge():
     await _notify("force_purge",
                   f"🔴 Force-Purge: {len(killed_pids)} llama-server(s) gekillt",
                   f"Soft evicted: {evicted}\nHard killed PIDs: {killed_pids}")
+    _log_admin_action("force-purge", "admin", _get_client_ip(request), _get_token_name(request), f"evicted={evicted} killed_pids={killed_pids}")
     return {"ok": True, "soft_evicted": evicted, "hard_killed_pids": killed_pids}
 
 
 @app.post("/maintenance/stop-all")
-async def maintenance_stop_all():
+async def maintenance_stop_all(request: Request):
     """Sperrt alle Inference-Requests (503) und killt laufende Prozesse.
     Mit /maintenance/resume wieder aufheben."""
+    _check_admin(request)
     global _stop_all
     _stop_all = True
     # Force-Purge: laufende Inferenz abbrechen
@@ -1856,26 +2482,77 @@ async def maintenance_stop_all():
         pass
     logger.info(f"[stop-all] aktiv — evicted={evicted} killed={killed}")
     await _notify("stop_all", "🛑 Stop-All aktiviert", f"Evicted: {evicted}\nKilled PIDs: {killed}")
+    _log_admin_action("stop-all", "admin", _get_client_ip(request), _get_token_name(request), f"evicted={evicted} killed_pids={killed}")
     return {"ok": True, "stop_all": True, "evicted": evicted, "killed_pids": killed}
 
 
 @app.post("/maintenance/resume")
-async def maintenance_resume():
+async def maintenance_resume(request: Request):
     """Hebt den Stop-All-Modus auf — Requests werden wieder durchgelassen."""
+    _check_admin(request)
     global _stop_all
     _stop_all = False
     logger.info("[stop-all] deaktiviert — Inference wieder erlaubt")
     await _notify("resume", "✅ Stop-All aufgehoben", "Inference wieder aktiv.")
+    _log_admin_action("resume", "admin", _get_client_ip(request), _get_token_name(request))
     return {"ok": True, "stop_all": False}
+
+
+def _save_ollama_lock():
+    with open(CONFIG_DIR / "ollama_lock.yaml", "w") as f:
+        yaml.safe_dump({"locked": _ollama_locked}, f)
+
+
+async def _set_ollama_lock(locked: bool, auto: bool, reason: str, client_ip: str = "") -> dict:
+    """Shared core for manual (/maintenance/ollama-lock|-unlock, admin-checked) and
+    automatic (ComfyUI-queue poller, no auth needed - it's an internal call, not
+    an HTTP request) toggling. `auto=True` marks a lock the poller itself set, so
+    it knows it's allowed to release it again once the queue empties - see
+    _ollama_lock_auto and _poll_comfyui_queue()."""
+    global _ollama_locked, _ollama_lock_auto
+    _ollama_locked = locked
+    _ollama_lock_auto = auto
+    _save_ollama_lock()
+    source = "auto" if auto else "admin"
+    if locked:
+        evicted = await _evict_loaded_models("ollama-lock")
+        logger.info(f"[ollama-lock] aktiv ({reason}) — evicted={evicted}")
+        await _notify("ollama_lock", "🔒 Ollama-Lock aktiviert", f"{reason}\nEvicted: {evicted}")
+        _log_admin_action("ollama-lock", source, client_ip, f"{reason} evicted={evicted}")
+        return {"ok": True, "ollama_locked": True, "evicted": evicted}
+    logger.info(f"[ollama-lock] deaktiviert ({reason})")
+    await _notify("ollama_unlock", "🔓 Ollama-Lock aufgehoben", reason)
+    _log_admin_action("ollama-unlock", source, client_ip, reason)
+    return {"ok": True, "ollama_locked": False}
+
+
+@app.post("/maintenance/ollama-lock")
+async def maintenance_ollama_lock(request: Request):
+    """Sperrt gezielt den Zugriff auf lokale Ollama-Modelle (native Endpunkte hart,
+    /v1/chat/completions mit Frontier-Fallback falls konfiguriert) und entlädt alle
+    geladenen Modelle, damit die GPUs sofort frei sind (z.B. für ComfyUI). Der Zustand
+    wird in config/ollama_lock.yaml persistiert und übersteht damit einen Neustart."""
+    _check_admin(request)
+    return await _set_ollama_lock(True, auto=False, reason="Manuell gesperrt (Admin)", client_ip=_get_client_ip(request), token_name=_get_token_name(request))
+
+
+@app.post("/maintenance/ollama-unlock")
+async def maintenance_ollama_unlock(request: Request):
+    """Hebt den Ollama-Lock wieder auf — lokale Modelle sind wieder nutzbar."""
+    _check_admin(request)
+    return await _set_ollama_lock(False, auto=False, reason="Manuell entsperrt (Admin)", client_ip=_get_client_ip(request), token_name=_get_token_name(request))
+
 
 class GamingOverrideRequestProxy(BaseModel):
     override: str
 
 @app.post("/maintenance/gaming_override")
-async def set_gaming_override(req: GamingOverrideRequestProxy):
+async def set_gaming_override(request: Request, req: GamingOverrideRequestProxy):
+    _check_admin(request)
     async with httpx.AsyncClient(timeout=5.0) as client:
         r = await client.post(f"{GPU_AGENT_URL}/gaming_override", json={"override": req.override})
         r.raise_for_status()
+        _log_admin_action("gaming_override", "admin", _get_client_ip(request), _get_token_name(request), f"override={req.override}")
         return r.json()
 
 
@@ -1905,19 +2582,32 @@ async def status_gpu():
             "models":      [{"name": m["name"], "vram_mb": round(m.get("size_vram", 0) / 1024 / 1024)} for m in models_on_gpu],
             "active_requests": active_on_gpu,
             "stop_all":    _stop_all,
+            "ollama_locked": _ollama_locked,
         }
     result["stop_all"] = _stop_all
+    result["ollama_locked"] = _ollama_locked
     return result
 
 
 @app.get("/status/gpu/html", response_class=__import__("fastapi").responses.HTMLResponse)
-async def status_gpu_html():
-    """Einfache HTML-Ansicht des GPU-Status."""
+async def status_gpu_html(request: Request, token: str = ""):
+    """Einfache HTML-Ansicht des GPU-Status mit Stop-All-Buttons.
+
+    Verlangt den Admin-Token wie /admin/* und /maintenance/* - diese Seite
+    bettet den echten Token in ihre Action-Buttons ein (fetch() aus dem Browser
+    kann sonst keine custom Header beim Navigieren mitschicken), darf also
+    selbst nicht unauthentifiziert aufrufbar sein, sonst leakt der Token an
+    jeden im LAN. Per Query-Param statt Header, weil das eine reine
+    Browser-Navigations-URL ist: /status/gpu/html?token=<admin-token>.
+    """
+    if token != _ADMIN_TOKEN and request.headers.get("X-Admin-Token", "") != _ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden — add ?token=<admin-token>")
     data = await status_gpu()
+    admin_hdr = f"{{'X-Admin-Token':'{_ADMIN_TOKEN}'}}"
     stop_banner = (
         '<div style="background:#ff4455;color:#fff;padding:12px 20px;font-weight:bold;font-size:15px;">'
         '🛑 STOP-ALL AKTIV — alle Inference-Requests werden blockiert'
-        ' &nbsp;<a href="#" onclick="fetch(\'/maintenance/resume\',{method:\'POST\'}).then(()=>location.reload())" '
+        f' &nbsp;<a href="#" onclick="fetch(\'/maintenance/resume\',{{method:\'POST\',headers:{admin_hdr}}}).then(()=>location.reload())" '
         'style="color:#fff;text-decoration:underline;">Aufheben</a></div>'
         if _stop_all else ""
     )
@@ -1947,10 +2637,10 @@ async def status_gpu_html():
           </div>
         </div>"""
     stop_btn = (
-        '<button onclick="fetch(\'/maintenance/stop-all\',{{method:\'POST\'}}).then(()=>location.reload())" '
+        f'<button onclick="fetch(\'/maintenance/stop-all\',{{method:\'POST\',headers:{admin_hdr}}}).then(()=>location.reload())" '
         'style="background:#ff4455;color:#fff;border:none;border-radius:6px;padding:8px 18px;cursor:pointer;font-size:14px;">🛑 Stop All</button>'
         if not _stop_all else
-        '<button onclick="fetch(\'/maintenance/resume\',{{method:\'POST\'}}).then(()=>location.reload())" '
+        f'<button onclick="fetch(\'/maintenance/resume\',{{method:\'POST\',headers:{admin_hdr}}}).then(()=>location.reload())" '
         'style="background:#2e7d32;color:#fff;border:none;border-radius:6px;padding:8px 18px;cursor:pointer;font-size:14px;">✅ Resume</button>'
     )
     return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
@@ -2116,6 +2806,7 @@ async def run_proxies():
         pass
 
     asyncio.create_task(_poll_gaming_mode())
+    asyncio.create_task(_poll_comfyui_queue())
     asyncio.create_task(_poll_hardware())
     asyncio.create_task(_poll_loaded_models())
     asyncio.create_task(_poll_model_catalog())
@@ -2125,11 +2816,17 @@ async def run_proxies():
     asyncio.create_task(_update_client_profiles())
     asyncio.create_task(_checkpoint_wal())
 
-    cfg_ollama = uvicorn.Config(app,       host="0.0.0.0", port=LISTEN_PORT,  log_level="warning")
-    cfg_comfy  = uvicorn.Config(comfy_app, host="0.0.0.0", port=COMFYUI_PORT, log_level="warning")
+    ssl_kwargs = {}
+    if _SSL_CERT.exists() and _SSL_KEY.exists():
+        ssl_kwargs = {"ssl_certfile": str(_SSL_CERT), "ssl_keyfile": str(_SSL_KEY)}
+    else:
+        logger.warning(f"  TLS cert not found at {_SSL_CERT} — serving plain HTTP")
+
+    cfg_ollama = uvicorn.Config(app,       host="0.0.0.0", port=LISTEN_PORT,  log_level="warning", **ssl_kwargs)
+    cfg_comfy  = uvicorn.Config(comfy_app, host="0.0.0.0", port=COMFYUI_PORT, log_level="warning", **ssl_kwargs)
 
     logger.info("llmproxy starting:")
-    logger.info(f"  Ollama  :{LISTEN_PORT}  → {OLLAMA_UPSTREAM_0} & {OLLAMA_UPSTREAM_1}")
+    logger.info(f"  Ollama  :{LISTEN_PORT}  → {OLLAMA_UPSTREAM_0} & {OLLAMA_UPSTREAM_1} (tls={'yes' if ssl_kwargs else 'no'})")
     logger.info(f"  ComfyUI :{COMFYUI_PORT} → {COMFYUI_UPSTREAM}")
     logger.info(f"  DB      : {DB_PATH}")
 
@@ -2139,15 +2836,19 @@ async def run_proxies():
     )
 
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(run_proxies())
-    except KeyboardInterrupt:
-        pass
-
 # ── Admin control endpoints ────────────────────────────────────────────────────
 
-_ADMIN_TOKEN = Path("/opt/llmproxy/.admin_token").read_text().strip()
+def _load_or_create_admin_token() -> str:
+    p = Path("/opt/llmproxy/.admin_token")
+    if p.exists():
+        return p.read_text().strip()
+    tok = secrets.token_urlsafe(32)
+    p.write_text(tok)
+    p.chmod(0o600)
+    logger.warning(f"[admin] no admin token found — generated a new one at {p}")
+    return tok
+
+_ADMIN_TOKEN = _load_or_create_admin_token()
 
 GAMING_SERVICES  = ["ollama", "comfyui", "comfyui2", "open-webui"]
 RESTORE_SERVICES = ["ollama", "comfyui", "comfyui2"]
@@ -2220,3 +2921,11 @@ async def admin_reboot(request: Request):
     await _notify("reboot", "🔄 Host startet neu", "Reboot via admin API ausgelöst.")
     asyncio.get_event_loop().call_later(2, lambda: subprocess.run(["sudo", "reboot"]))
     return {"rebooting": True}
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run_proxies())
+    except KeyboardInterrupt:
+        pass
+
