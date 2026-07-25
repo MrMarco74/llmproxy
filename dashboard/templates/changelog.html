@@ -8,6 +8,20 @@
 
 <div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
 
+  <div class="card relative pl-10 border-l-4 border-l-[#a6e3a1]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#a6e3a1] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#a6e3a1] text-lg">v2.8.0 — Advanced Guardrails, Fail2Ban & DLP</h2>
+      <span class="text-sm text-[#7f849c]">25. Juli 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Erweiterte Rule-Engine:</strong> Die Guardrails unterstützen nun dynamische Aktionen (<code class="bg-[#313244] px-1 py-0.5 rounded">deny</code>, <code class="bg-[#313244] px-1 py-0.5 rounded">silent</code>, <code class="bg-[#313244] px-1 py-0.5 rounded">redirect</code>, <code class="bg-[#313244] px-1 py-0.5 rounded">rewrite</code>) sowie einen <code class="bg-[#313244] px-1 py-0.5 rounded">shadow</code>-Modus zum gefahrlosen Testen neuer Filter.</li>
+      <li><strong>Fail2Ban:</strong> Bei wiederholten Guardrail-Verstößen (10x in 5 Min) wird das Token temporär gesperrt. Entsperrung manuell via <code class="bg-[#313244] px-1 py-0.5 rounded text-[#89b4fa]">POST /admin/unban</code> möglich. Events werden in der neuen SQLite Tabelle <code class="bg-[#313244] px-1 py-0.5 rounded">guardrail_events</code> protokolliert.</li>
+      <li><strong>DLP & Output-Filtern:</strong> Prompts und LLM-Outputs werden vor der Übertragung auf kritische Muster (Kreditkarten, SSN) geprüft und blockiert oder maskiert.</li>
+      <li><strong>Simulator-Tool:</strong> Das neue CLI-Tool `guardrails_simulator.py` erlaubt es, historische Prompts offline durch die Filter zu jagen, um die Auswirkung von neuen Guardrails zu prüfen.</li>
+    </ul>
+  </div>
+
   <div class="card relative pl-10 border-l-4 border-l-[#cba6f7]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#cba6f7] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">
