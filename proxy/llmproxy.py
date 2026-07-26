@@ -553,7 +553,7 @@ def _db_log_failure(*, model: str, client_ip: str, token_name: str = "", endpoin
     try:
         _db().execute(
             "INSERT INTO failures (ts, model, client_ip, token_name, endpoint, status_code, failure_reason, last_user_message) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             [now, model, client_ip, token_name, endpoint, status_code, failure_reason, last_user_message[:500]]
         )
         _db().commit()
