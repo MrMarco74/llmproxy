@@ -3,3 +3,5 @@ uvicorn[standard]
 httpx
 websockets
 pyyaml
+presidio-analyzer
+spacy

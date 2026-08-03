@@ -14,27 +14,21 @@ routes:
   - if_complexity_below: 0.15
     model_pattern: "qwen3:32b"
     route_to: "qwen3:8b"
-    target_gpu: 1
 
   - if_complexity_below: 0.15
     model_pattern: "qwen3:14b"
     route_to: "qwen3:8b"
-    target_gpu: 1
 
-  # Beispiel: ein bestimmtes Modell standardmäßig immer auf GPU 1 laufen lassen
-  - if_complexity_below: 0
-    model_pattern: "llama3:8b"
-    route_to: "llama3:8b"
-    target_gpu: 1
-
-  # Beispiel: ein großes Modell, das nicht auf eine einzelne (kleinere) Karte
-  # passt. Ollama.service (GPU 0-Upstream, Port 11434) ist per
-  # CUDA_VISIBLE_DEVICES=0,1 auf beide GPUs kombiniert konfiguriert und laedt
-  # dieses Modell gesplittet ueber beide Karten. Fest auf target_gpu 0 pinnen,
-  # damit es nie auf ollama-gpu1 (GPU1-only, Port 11438) geroutet wird - dort
-  # wuerde es je nach VRAM-Größe per CUDA OOM fehlschlagen.
-  # Modellname/Route durch dein eigenes großes Modell ersetzen.
-  - if_complexity_below: 0
-    model_pattern: "your-large-model:tag"
-    route_to: "your-large-model:tag"
-    target_gpu: 0
+  # dana ist aktuell Single-GPU (RTX 3080, 12GB) - keine target_gpu-Pins mehr
+  # aktiv. Falls wieder Multi-GPU-Hardware verfuegbar ist, koennen Beispiele
+  # wie unten reaktiviert werden:
+  #
+  # - if_complexity_below: 0
+  #   model_pattern: "llama3:8b"
+  #   route_to: "llama3:8b"
+  #   target_gpu: 1
+  #
+  # - if_complexity_below: 0
+  #   model_pattern: "your-large-model:tag"
+  #   route_to: "your-large-model:tag"
+  #   target_gpu: 0

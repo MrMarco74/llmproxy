@@ -1,5 +1,5 @@
 # Manueller Schalter: sperrt gezielt den Zugriff auf lokale Ollama-Modelle,
-# z.B. um beide GPUs für ComfyUI freizuräumen. Frontier-Fallback (fallback.yaml)
+# z.B. um die GPU fuer ComfyUI freizuraeumen. Frontier-Fallback (fallback.yaml)
 # bleibt für Clients mit frontier_allowed: true nutzbar - im Unterschied zum
 # harten Stop-All blockiert dieser Schalter nicht ausnahmslos alles.
 #

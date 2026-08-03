@@ -184,13 +184,19 @@ _fallback_cfg     = _load_yaml("fallback.yaml",        {"enabled": False, "mappi
 _guardrails_cfg = _load_yaml("guardrails.yaml", {"enabled": False, "global_rules": [], "client_rules": {}})
 _fail2ban_cfg = _load_yaml("fail2ban.yaml", {"bans": {}})
 
-def _dlp_mask(text: str) -> str:
-    # TODO: Connect to Microsoft Presidio or local NLP
-    # For now, simulate by replacing standard regexes
-    import re
-    text = re.sub(r'\b\d{4}-\d{4}-\d{4}-\d{4}\b', '[CREDIT_CARD]', text)
-    text = re.sub(r'\b\d{3}-\d{2}-\d{4}\b', '[SSN]', text)
-    return text
+from presidio_analyzer import AnalyzerEngine
+
+_presidio_engine = AnalyzerEngine()
+_DLP_ENTITIES = ["CREDIT_CARD", "US_SSN", "EMAIL_ADDRESS", "PHONE_NUMBER", "IBAN_CODE", "PERSON"]
+
+async def _dlp_mask(text: str) -> str:
+    results = await asyncio.to_thread(
+        _presidio_engine.analyze, text=text, language="en", entities=_DLP_ENTITIES
+    )
+    masked = text
+    for r in sorted(results, key=lambda r: r.start, reverse=True):
+        masked = masked[:r.start] + f"[{r.entity_type}]" + masked[r.end:]
+    return masked
 
 def _is_banned(token_name: str) -> bool:
     ban_time = _fail2ban_cfg.get("bans", {}).get(token_name)
@@ -243,7 +249,7 @@ def _get_effective_rules(token_name: str) -> list:
     return list(global_rules) + list(client_rules)
 
 
-def _apply_rules(prompt_text: str, token_name: str, client_ip: str, body: dict,
+async def _apply_rules(prompt_text: str, token_name: str, client_ip: str, body: dict,
                  rules: list, record: bool = True) -> tuple[bool, str|None, str, dict, dict|None]:
     """Core rule engine. Returns (modified, violation_msg, action, new_body, triggered_rule)."""
     import re as _re
@@ -259,7 +265,7 @@ def _apply_rules(prompt_text: str, token_name: str, client_ip: str, body: dict,
 
         hit = False
         if trigger == "dlp":
-            masked = _dlp_mask(prompt_text)
+            masked = await _dlp_mask(prompt_text)
             if masked != prompt_text:
                 hit = True
                 if action == "rewrite" and mode == "enforce":
@@ -301,31 +307,30 @@ def _apply_rules(prompt_text: str, token_name: str, client_ip: str, body: dict,
     return modified, None, "pass", new_body, None
 
 
-def _check_output_safeguards(text: str, token_name: str) -> bool:
+async def _check_output_safeguards(text: str, token_name: str) -> bool:
     if not _guardrails_cfg.get("enabled", False):
         return True
     rules = _get_effective_rules(token_name)
     text_lower = text.lower()
-    import re
     for rule in rules:
         if rule.get("trigger") == "output_keyword":
             if rule.get("pattern", "").lower() in text_lower:
                 _log_to_splunk("output_guardrail_violation", {"token_name": token_name, "rule": rule, "snippet": text[:200]})
                 return False
         elif rule.get("trigger") == "output_dlp":
-            if re.search(r'\b\d{4}-\d{4}-\d{4}-\d{4}\b', text):
+            if await _dlp_mask(text) != text:
                 _log_to_splunk("output_guardrail_dlp_leak", {"token_name": token_name, "snippet": text[:200]})
                 return False
     return True
 
 
-def _run_guardrails(prompt_text: str, token_name: str, client_ip: str, body: dict) -> tuple[bool, str|None, str, dict]:
+async def _run_guardrails(prompt_text: str, token_name: str, client_ip: str, body: dict) -> tuple[bool, str|None, str, dict]:
     if not _guardrails_cfg.get("enabled", False):
         return False, None, "pass", body
     if _is_banned(token_name):
         return False, "Token is banned (Fail2Ban)", "deny", body
     rules = _get_effective_rules(token_name)
-    modified, violation, action, new_body, _ = _apply_rules(prompt_text, token_name, client_ip, body, rules, record=True)
+    modified, violation, action, new_body, _ = await _apply_rules(prompt_text, token_name, client_ip, body, rules, record=True)
     return modified, violation, action, new_body
 
 
@@ -346,7 +351,7 @@ async def _guard_safeguards(request: Request):
     token_name = _get_token_name(request)
     client_ip = _get_client_ip(request)
     
-    modified, violation, action, new_body = _run_guardrails(prompt_text, token_name, client_ip, body)
+    modified, violation, action, new_body = await _run_guardrails(prompt_text, token_name, client_ip, body)
     
     if action in ("deny", "silent"):
         status = 403 if action == "deny" else 200
@@ -2322,7 +2327,7 @@ async def simulate_guardrails(request: Request):
             if not _guardrails_cfg.get("enabled", False):
                 return {"result": "pass", "note": "Guardrails disabled"}
             rules = _get_effective_rules(token_name)
-        modified, violation, action, new_body, triggered_rule = _apply_rules(
+        modified, violation, action, new_body, triggered_rule = await _apply_rules(
             prompt, token_name, "simulate", {"messages": [{"role": "user", "content": prompt}]},
             rules, record=False
         )
@@ -2364,7 +2369,7 @@ async def simulate_guardrails_batch(request: Request):
         blocked_count = 0
         for row in rows:
             rid, ts, tn, ip, prompt = row
-            _, violation, action, _, triggered_rule = _apply_rules(
+            _, violation, action, _, triggered_rule = await _apply_rules(
                 prompt or "", tn or "", ip or "",
                 {"messages": [{"role": "user", "content": prompt}]},
                 rules, record=False

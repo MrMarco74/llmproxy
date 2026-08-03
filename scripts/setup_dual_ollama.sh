@@ -3,6 +3,10 @@
 # asymmetrisches Multi-GPU um. Beispiel unten: zwei unterschiedlich große GPUs
 # (z.B. eine 24GB- und eine 12GB-Karte) — Werte/Kommentare an die eigene
 # Hardware anpassen.
+#
+# NICHT ANWENDBAR auf dana's aktuelle Hardware (Stand 2026-07-29): dana ist
+# jetzt Single-GPU (RTX 3080, 12GB) - die zweite Karte wurde ausgebaut. Dieses
+# Skript nur bei Rückkehr zu echter Multi-GPU-Hardware erneut verwenden.
 
 echo "Konfiguriere primären Ollama Dienst (beide GPUs kombiniert) auf Port 11434..."
 # CUDA_VISIBLE_DEVICES=0,1 statt nur 0: Modelle, die nicht auf eine einzelne
