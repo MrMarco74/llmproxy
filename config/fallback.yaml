@@ -4,12 +4,10 @@
 # in `mapping` auf ein in frontier.yaml konfiguriertes Frontier-Modell zeigen.
 # Nur für den OpenAI-kompatiblen Endpunkt (/v1/chat/completions) — /api/chat
 # und /api/generate (natives Ollama-Format) haben keinen Fallback.
-enabled: false
-mapping: {}
-# Beispiel (ein "*"-Key wirkt als Catchall für jedes Modell ohne eigenen
-# Eintrag; ein exakter Modell-Match hat immer Vorrang):
-# enabled: true
-# mapping:
-#   "qwen2.5:14b": gemini-1.5-pro
-#   "llama3.1:8b": gemini-1.5-flash
-#   "*": gemini-1.5-flash
+enabled: true
+mapping:
+  # "*"-Key wirkt als Catchall für jedes Modell ohne eigenen Eintrag; ein
+  # exakter Modell-Match hat immer Vorrang. Aktiviert seit dem dana-Ausfall
+  # vom 2026-08-03, bei dem lokale Anfragen ohne Fallback einfach fehlschlugen
+  # statt auf ein Frontier-Modell umzuleiten.
+  '*': models/gemini-3.6-flash
