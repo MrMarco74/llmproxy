@@ -2085,7 +2085,7 @@ async def proxy_embeddings(request: Request):
         raise HTTPException(status_code=403, detail={"error": f"model {model} not allowed for client {client_ip}"})
 
     t0        = time.monotonic()
-    _rid      = _req_start(model, client_ip, path)
+    _rid      = _req_start(model, client_ip, token_name, path)
     
     routed_model, _, target_gpu = _apply_router(model, 0.1)
     if routed_model != model:
