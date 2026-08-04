@@ -26,3 +26,11 @@ are. The GPU host address is `LLMPROXY_GPU_HOST`, currently
 `gpuhost.internal.familie-frischkorn.de` (the plain hostname `dana` does
 not resolve on `worker` — a real DNS gap, not a typo, worked around via
 the FQDN).
+
+**Workflow: commit → push → run the `llmproxy.yml` / `gpu-agent.yml`
+playbook via LabControl** (`lifecycle_action=update`), through its MCP
+server (`mcp__labcontrol__run_playbook`) or the LabControl web UI. Never
+hand-run `rsync`/`ssh` against `worker`/`dana` and never edit the code
+directly on a production host. `scripts/deploy_to_raspi.sh`, which did
+exactly that (despite the now-outdated name, it targeted `worker`), has
+been removed.
