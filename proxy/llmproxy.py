@@ -1361,11 +1361,50 @@ async def proxy_native(request: Request):
     prompt_text = (_extract_last_user_message(body) or body.get("prompt", ""))[:2000]
     hostname = _resolve_hostname(client_ip)
 
+    # Outage fallback (native clients): _guard_ollama_lock above already handles the
+    # *deliberate* ollama_locked case with a hard 503, no fallback, by design. This
+    # covers the separate, unplanned case -- Ollama actually being down -- which until
+    # now just propagated as a bare 500 for native clients (unlike /v1/chat/completions,
+    # which has always had this).
+    fb = _get_fallback_frontier(model)
+    frontier_allowed = fb is not None and client_cfg.get("frontier_allowed", False)
+
+    async def _frontier_fallback_native(reason: str):
+        fb_model, fb_base_url, fb_api_key = fb
+        logger.warning(f"[fallback] Ollama-Upstream {upstream_idx} {reason} → {model} auf Frontier {fb_model} umgeleitet (native)")
+        _guard_budget_sync(token_name, is_frontier=True)
+        openai_body = _native_request_to_openai(body, fb_model)
+        fr_resp = await _proxy_frontier_openai(request, openai_body, fb_model, False, client_ip, ua, cx_score,
+                                               fb_base_url, fb_api_key, token_name=token_name)
+        if fr_resp.status_code != 200:
+            _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint=path,
+                            status_code=fr_resp.status_code, failure_reason="frontier_upstream_error",
+                            last_user_message=prompt_text)
+            raise RuntimeError(f"frontier fallback failed: HTTP {fr_resp.status_code}")
+        openai_data = json.loads(fr_resp.body)
+        return _openai_response_to_native(openai_data, model)
+
+    if frontier_allowed and not _ollama_healthy.get(upstream_idx, True):
+        native_data = await _frontier_fallback_native("down (health-check)")
+        if not stream:
+            return Response(content=json.dumps(native_data), media_type="application/json")
+        async def _fallback_stream():
+            yield (json.dumps({**native_data, "done": False}) + "\n").encode()
+            yield (json.dumps({"model": model, "done": True, "done_reason": "stop",
+                                "prompt_eval_count": native_data["prompt_eval_count"],
+                                "eval_count": native_data["eval_count"],
+                                "message": {"role": "assistant", "content": ""}}) + "\n").encode()
+        return StreamingResponse(_fallback_stream(), media_type="application/x-ndjson")
+
     if not stream:
         try:
             try:
                 resp = await _client.post(f"{upstream_url}{path}", json=body)
-            except Exception:
+            except Exception as e:
+                _ollama_healthy[upstream_idx] = False
+                if frontier_allowed:
+                    native_data = await _frontier_fallback_native(f"nicht erreichbar ({e})")
+                    return Response(content=json.dumps(native_data), media_type="application/json")
                 _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint=path,
                                 status_code=500, failure_reason="upstream_error",
                                 last_user_message=prompt_text)
@@ -1418,7 +1457,18 @@ async def proxy_native(request: Request):
                                 resp_parts.append(content)
                         except (json.JSONDecodeError, ValueError):
                             pass
-        except Exception:
+        except Exception as e:
+            if not resp_parts and frontier_allowed:
+                # Nothing streamed yet (failed at connect) -- safe to still swap
+                # in the frontier fallback under the same ndjson response.
+                _ollama_healthy[upstream_idx] = False
+                native_data = await _frontier_fallback_native(f"nicht erreichbar ({e})")
+                yield (json.dumps({**native_data, "done": False}) + "\n").encode()
+                yield (json.dumps({"model": model, "done": True, "done_reason": "stop",
+                                    "prompt_eval_count": native_data["prompt_eval_count"],
+                                    "eval_count": native_data["eval_count"],
+                                    "message": {"role": "assistant", "content": ""}}) + "\n").encode()
+                return
             _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint=path,
                             status_code=500, failure_reason="upstream_error",
                             last_user_message=prompt_text)
@@ -1599,6 +1649,65 @@ def _native_to_openai(data: dict, model: str, stream: bool = False,
         "usage": {"prompt_tokens": data.get("prompt_eval_count", 0),
                   "completion_tokens": data.get("eval_count", 0),
                   "total_tokens": data.get("prompt_eval_count", 0) + data.get("eval_count", 0)},
+    }
+
+
+def _native_request_to_openai(body: dict, model: str) -> dict:
+    """Native /api/chat or /api/generate request body -> OpenAI chat-completions
+    body, for frontier fallback of native-Ollama clients (e.g. cassandra)."""
+    messages = body.get("messages")
+    if messages is None:
+        # /api/generate uses a flat "prompt" instead of a "messages" list.
+        messages = []
+        if body.get("system"):
+            messages.append({"role": "system", "content": body["system"]})
+        messages.append({"role": "user", "content": body.get("prompt", "")})
+    else:
+        messages = [{"role": m.get("role", "user"), "content": m.get("content", "")} for m in messages]
+
+    openai_body: dict = {"model": model, "messages": messages, "stream": False}
+    opts = body.get("options", {}) or {}
+    if "num_predict" in opts:
+        openai_body["max_tokens"] = opts["num_predict"]
+    if "temperature" in opts:
+        openai_body["temperature"] = opts["temperature"]
+    if "top_p" in opts:
+        openai_body["top_p"] = opts["top_p"]
+    if body.get("tools"):
+        openai_body["tools"] = body["tools"]
+    if body.get("format") == "json":
+        openai_body["response_format"] = {"type": "json_object"}
+    return openai_body
+
+
+def _openai_response_to_native(data: dict, model: str) -> dict:
+    """Inverse of _native_to_openai: OpenAI chat-completions response ->
+    native Ollama /api/chat response shape, so a native client never has to
+    know a request was actually served by a frontier fallback."""
+    choices = data.get("choices", [])
+    msg = choices[0].get("message", {}) if choices else {}
+    content = msg.get("content", "") or ""
+
+    tool_calls = []
+    for tc in msg.get("tool_calls", []) or []:
+        fn = tc.get("function", {})
+        args = fn.get("arguments", {})
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                pass
+        tool_calls.append({"function": {"name": fn.get("name", ""), "arguments": args}})
+
+    usage = data.get("usage", {})
+    return {
+        "model": model,
+        "message": {"role": "assistant", "content": content,
+                    **({"tool_calls": tool_calls} if tool_calls else {})},
+        "done": True,
+        "done_reason": "stop",
+        "prompt_eval_count": usage.get("prompt_tokens", 0),
+        "eval_count": usage.get("completion_tokens", 0),
     }
 
 
