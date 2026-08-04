@@ -8,6 +8,19 @@
 
 <div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
 
+  <div class="card relative pl-10 border-l-4 border-l-[#a6e3a1]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#a6e3a1] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#a6e3a1] text-lg">v2.11.0 &mdash; Frontier-Fallback f&uuml;r native Ollama-Endpunkte</h2>
+      <span class="text-sm text-[#7f849c]">4. August 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Native Endpunkte fallen jetzt auch aus:</strong> <code>/api/chat</code> und <code>/api/generate</code> leiten bei einem echten Ollama-Ausfall (Health-Check oder Connection-Error) jetzt genau wie <code>/v1/chat/completions</code> automatisch auf ein konfiguriertes Frontier-Modell um &mdash; vorher gab es daf&uuml;r nur einen harten <code>500</code>. Betrifft nur Clients mit <code>frontier_allowed: true</code>; der bewusst gesetzte Ollama-Lock bleibt weiterhin ein harter <code>503</code> ohne Fallback (Absicht, kein Bug).</li>
+      <li><strong>Bugfix Frontier-Proxy:</strong> Ein fehlendes Funktionsargument lie&szlig; jeden Frontier-Fallback- sowie jeden Embeddings-Request mit einem <code>TypeError</code> abst&uuml;rzen &mdash; unbemerkt, weil vorher <em>kein</em> Client <code>frontier_allowed</code> gesetzt hatte und dieser Pfad nie lief.</li>
+      <li><strong>Client-Konfiguration:</strong> <code>cassandra</code> hat jetzt <code>frontier_allowed: true</code>, damit die eigenen LLM-Routinen (Recon/Breach/Scenario/Summary-Pipeline) einen echten dana-Ausfall &uuml;berstehen, statt mit 500 zu scheitern.</li>
+    </ul>
+  </div>
+
   <div class="card relative pl-10 border-l-4 border-l-[#f9e2af]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f9e2af] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">

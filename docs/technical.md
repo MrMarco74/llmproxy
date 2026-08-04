@@ -106,7 +106,7 @@ inzwischen auch geschützt) verlangen den `X-Admin-Token`-Header (gleicher Mecha
 |---|---|---|
 | POST | `/maintenance/stop-all` | Blockiert **ausnahmslos alle** Inference-Requests (503) und killt laufende llama-server-Prozesse. Aufheben via `/maintenance/resume`. |
 | POST | `/maintenance/resume` | Hebt `/maintenance/stop-all` wieder auf. |
-| POST | `/maintenance/ollama-lock` | Sperrt gezielt nur den Zugriff auf **lokale** Ollama-Modelle und entlädt sie sofort aus dem VRAM (z.B. um beide GPUs für ComfyUI freizuräumen). Clients mit `frontier_allowed: true` werden weiterhin über `fallback.yaml` bedient (`/v1/chat/completions`); native Endpunkte und Embeddings liefern hart `503`. Zustand persistiert in `config/ollama_lock.yaml`, übersteht also einen Neustart. Response: `{ok, ollama_locked, evicted}`. |
+| POST | `/maintenance/ollama-lock` | Sperrt gezielt nur den Zugriff auf **lokale** Ollama-Modelle und entlädt sie sofort aus dem VRAM (z.B. um beide GPUs für ComfyUI freizuräumen). Clients mit `frontier_allowed: true` werden weiterhin über `fallback.yaml` bedient — sowohl `/v1/chat/completions` als auch `/api/chat`/`/api/generate` leiten dabei automatisch auf ein Frontier-Modell um (siehe Abschnitt [`fallback.yaml`](#fallbackyaml)). Ausnahme bleibt der bewusste Ollama-Lock selbst: der blockiert `/api/chat`/`/api/generate` weiterhin hart mit `503`, unabhängig von `frontier_allowed` — das ist Absicht (siehe `ollama_lock.yaml`-Abschnitt), kein fehlender Fallback. Embeddings (`/api/embeddings`, `/v1/embeddings`) kennen so oder so keinen Fallback. Zustand persistiert in `config/ollama_lock.yaml`, übersteht also einen Neustart. Response: `{ok, ollama_locked, evicted}`. |
 | POST | `/maintenance/ollama-unlock` | Hebt `/maintenance/ollama-lock` wieder auf. Response: `{ok, ollama_locked}`. |
 | POST | `/maintenance/evict-models` | Entlädt alle aktuell geladenen Modelle aus dem VRAM (on-demand, ohne Lock zu setzen). |
 | POST | `/maintenance/force-purge` | Zweistufiger Hard-Reset: soft evict, dann `killall llama-server`. |
@@ -308,10 +308,16 @@ providers:
 ### `fallback.yaml`
 
 Automatischer Fallback auf ein Frontier-Modell, wenn der zuständige Ollama-Upstream
-nicht erreichbar ist — nur für `/v1/chat/completions`, nur für Clients mit
-`frontier_allowed: true`. Erkennung über zwei Signale: einen periodischen
-Health-Check (`_poll_model_catalog()`, alle 30s) plus sofortiges Umleiten bei
-einem echten Verbindungsfehler auf dem Live-Request.
+nicht erreichbar ist — für `/v1/chat/completions` **und** die nativen Endpunkte
+`/api/chat`/`/api/generate` (`proxy_native()`; native Request/Response wird dafür
+transparent zu/von OpenAI-Schema konvertiert, der Client merkt vom Fallback nichts),
+nur für Clients mit `frontier_allowed: true`. Erkennung über zwei Signale: einen
+periodischen Health-Check (`_poll_model_catalog()`, alle 30s) plus sofortiges
+Umleiten bei einem echten Verbindungsfehler auf dem Live-Request. Ausnahme: der
+bewusst gesetzte `ollama_locked`-Zustand (siehe `ollama_lock.yaml`) blockiert die
+nativen Endpunkte weiterhin hart ohne Fallback — das ist ein separater,
+gewollter Schalter, keine Ausfall-Erkennung. `/api/embeddings` und `/v1/embeddings`
+kennen grundsätzlich keinen Fallback, unabhängig vom Lock-Zustand.
 
 ```yaml
 enabled: true
@@ -336,9 +342,13 @@ Regeln werden in Reihenfolge geprüft; erste Übereinstimmung gewinnt.
 Manueller Schalter, der gezielt nur den Zugriff auf lokale Ollama-Modelle sperrt (z.B.
 um beide GPUs exklusiv für ComfyUI freizuräumen) — im Unterschied zu `/maintenance/stop-all`,
 das ausnahmslos alles blockiert. Clients mit `frontier_allowed: true` werden bei aktivem
-Lock weiterhin über den bestehenden `fallback.yaml`-Mechanismus bedient (`/v1/chat/completions`
-leitet automatisch um); `/api/chat`, `/api/generate`, `/api/embeddings` und `/v1/embeddings`
-kennen keinen Fallback und liefern hart `503`.
+Lock über `/v1/chat/completions` weiterhin bedient (leitet automatisch auf Frontier um).
+`/api/chat` und `/api/generate` haben zwar seit Kurzem einen eigenen Fallback für echte
+Ollama-Ausfälle (siehe `fallback.yaml`-Abschnitt), werden bei einem *bewusst gesetzten*
+Ollama-Lock aber trotzdem hart mit `503` blockiert — das ist Absicht: der Lock-Guard
+(`_guard_ollama_lock`) greift vor dem eigentlichen Handler und kennt keine Ausnahme für
+diesen Fall. `/api/embeddings` und `/v1/embeddings` kennen so oder so keinen Fallback und
+liefern immer hart `503`, sobald der lokale Ollama-Upstream nicht erreichbar ist.
 
 ```yaml
 locked: <bool>

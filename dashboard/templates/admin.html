@@ -73,10 +73,14 @@
         </label>
     </div>
     <p class="text-sm text-[#7f849c] mb-4">
-        Leitet <code>/v1/chat/completions</code> automatisch auf ein Frontier-Modell um, wenn der
-        zuständige Ollama-Upstream nicht erreichbar ist. Greift nur für Clients mit
+        Leitet <code>/v1/chat/completions</code> <em>und</em> die nativen Ollama-Endpunkte
+        (<code>/api/chat</code>, <code>/api/generate</code>) automatisch auf ein Frontier-Modell
+        um, wenn der zuständige Ollama-Upstream nicht erreichbar ist (Health-Check-Ausfall oder
+        ein Connection-Error auf der Anfrage selbst). Greift nur für Clients mit
         "Allow Frontier LLMs" (Clients-Tab) und nur wenn das lokale Modell unten einem
-        konfigurierten Frontier-Modell zugeordnet ist.
+        konfigurierten Frontier-Modell zugeordnet ist. Ausnahme: der bewusste
+        <code>ollama_locked</code>-Schalter (z.B. um GPUs für ComfyUI freizuräumen) blockiert die
+        nativen Endpunkte weiterhin hart ohne Fallback — das ist Absicht, kein Bug.
     </p>
 
     <div class="card">
@@ -217,11 +221,15 @@
                 <h3 class="font-bold text-[#cdd6f4]">🔒 Ollama-Lock (GPU freiräumen)</h3>
                 <p class="text-sm text-[#7f849c] mt-1">
                     Sperrt den Zugriff auf lokale Ollama-Modelle und entlädt sie sofort aus dem VRAM
-                    &mdash; z.B. um beide GPUs exklusiv für ComfyUI freizuräumen. Clients mit
-                    Frontier-Fallback (fallback.yaml) werden dabei weiterhin bedient. Der Zustand
-                    übersteht einen Neustart des Proxys. Wird außerdem automatisch gesetzt,
-                    solange ComfyUIs Queue nicht leer ist &mdash; der Schalter hier überschreibt
-                    das jederzeit manuell.
+                    &mdash; z.B. um beide GPUs exklusiv für ComfyUI freizuräumen. Clients von
+                    <code>/v1/chat/completions</code> mit Frontier-Fallback (fallback.yaml) werden
+                    dabei weiterhin bedient. Die nativen Ollama-Endpunkte
+                    (<code>/api/chat</code>, <code>/api/generate</code>) kennen diesen Fallback
+                    bewusst nicht und werden hart mit 503 blockiert, auch wenn der Client
+                    Frontier-Fallback konfiguriert hat &mdash; Ollama-Lock ist eine gezielte
+                    Sperre, kein Ausfall. Der Zustand übersteht einen Neustart des Proxys. Wird
+                    außerdem automatisch gesetzt, solange ComfyUIs Queue nicht leer ist &mdash;
+                    der Schalter hier überschreibt das jederzeit manuell.
                 </p>
                 <p class="text-xs mt-2" id="ollama-lock-status">Status wird geladen…</p>
             </div>
