@@ -31,6 +31,12 @@ clients:
     blocked: false
     limit: 10000000
     models: '*'
+  dokurag:
+    blocked: false
+    limit: 10000000
+    models:
+    - nomic-embed-text
+    token: ***REMOVED-TOKEN***
   domainstats:
     blocked: false
     limit: 10000000
