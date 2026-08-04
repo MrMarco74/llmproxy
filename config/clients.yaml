@@ -1,102 +1,88 @@
 clients:
   baselinevulnboard:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   cassandra:
     blocked: false
     frontier_allowed: true
+    frontier_models:
+    - models/gemini-3.6-flash
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   comic-generator:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   comicmakerng:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   cyberpulse:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   default:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
   domainstats:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   hermes:
     blocked: false
-    frontier_allowed: true
     limit: -1
     models: '*'
     token: ***REMOVED-TOKEN***
   llmbenchy:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   llmgui:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   neurotracker:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   pylibs:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   soc-panic:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   storygen:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   testmanager:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   yads-testing:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
   zscaler_bypass:
     blocked: false
-    frontier_allowed: true
     limit: 10000000
     models: '*'
     token: ***REMOVED-TOKEN***
