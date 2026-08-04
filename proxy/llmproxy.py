@@ -1739,7 +1739,7 @@ async def _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx
     has_tools = bool(body.get("tools"))
     
     t0 = time.monotonic()
-    _rid = _req_start(model, client_ip, "/v1/chat/completions (frontier)")
+    _rid = _req_start(model, client_ip, token_name, "/v1/chat/completions (frontier)")
     
     def _log(pt, ct, dur, status=200, ttft=None, ntc=0, resp_text=""):
         tps = round(ct / dur, 1) if dur > 0 and ct > 0 else None
