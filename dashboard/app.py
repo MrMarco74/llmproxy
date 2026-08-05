@@ -707,3 +707,61 @@ async def proxy_gaming_override(request: Request):
             return r.json()
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+@app.get("/api/proxy/maintenance/{action}")
+async def proxy_maintenance(action: str):
+    try:
+        async with httpx.AsyncClient(timeout=5.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/maintenance/{action}")
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/admin/wol_config")
+async def api_wol_config():
+    try:
+        async with httpx.AsyncClient(timeout=3.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/wol_config")
+            return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/admin/wol_config")
+async def api_wol_config_save(request: Request):
+    try:
+        data = await request.json()
+        async with httpx.AsyncClient(timeout=3.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/wol_config", json=data)
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/admin/ping_test")
+async def api_ping_test(request: Request):
+    try:
+        data = await request.json()
+        hostname = data.get("hostname", "")
+        async with httpx.AsyncClient(timeout=5.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/ping_test", json={"hostname": hostname})
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/admin/test_ollama")
+async def api_admin_test_ollama():
+    try:
+        async with httpx.AsyncClient(timeout=5.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/test_ollama")
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/admin/llm_config")
+async def api_llm_config(request: Request):
+    try:
+        data = await request.json()
+        async with httpx.AsyncClient(timeout=3.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/llm_config", json=data)
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

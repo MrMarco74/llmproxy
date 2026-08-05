@@ -11,6 +11,20 @@
   <div class="card relative pl-10 border-l-4 border-l-[#f38ba8]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f38ba8] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#f38ba8] text-lg">v2.13.0 &mdash; Settings-Architektur: LLM / Log / Homelab</h2>
+      <span class="text-sm text-[#7f849c]">6. August 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Settings neu strukturiert:</strong> Der einzelne Settings-Bereich wurde in drei klar getrennte Panels aufgeteilt: <em>LLM Settings</em>, <em>Log Settings</em> und <em>Homelab Settings</em>. Die Navigation nutzt jetzt Untertabs für schnelles Hin-und-Her.</li>
+      <li><strong>LLM Settings:</strong> Neue Felder f&uuml;r Proxy-Basis-URL, API-Token und eine interaktive Modellliste (mit Suchfilter) zur Auswahl des aktiven LLM-Modells. Die Liste wird live von <code>/api/admin/models</code> bezogen.</li>
+      <li><strong>Homelab &mdash; WOL + Ping Test:</strong> Das Wake-on-LAN-Panels erhielt ein neues Hostname-Feld und einen <code>Ping-Test</code>-Button, der per AJAX die Erreichbarkeit des Zielsystems pr&uuml;ft (mit Latenz-Rückmeldung).</li>
+      <li><strong>Neue Backend-Endpunkte:</strong> <code>GET/POST /api/admin/wol_config</code>, <code>POST /api/admin/ping_test</code>, <code>GET /api/proxy/maintenance/{action}</code>, <code>GET /api/admin/test_ollama</code> und <code>POST /api/admin/llm_config</code> — alle als Thin-Proxy zum echten Proxy.</li>
+    </ul>
+  </div>
+
+  <div class="card relative pl-10 border-l-4 border-l-[#f38ba8]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f38ba8] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
       <h2 class="font-bold text-[#f38ba8] text-lg">v2.12.0 &mdash; Wake-on-LAN Fallback f&uuml;r dana + Redirect-Bugfix</h2>
       <span class="text-sm text-[#7f849c]">5. August 2026</span>
     </div>
