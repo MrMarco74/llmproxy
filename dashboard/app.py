@@ -409,6 +409,42 @@ async def api_admin_clients_usage():
     }
 
 
+# ── Usage Audit ───────────────────────────────────────────────────────────────
+
+@app.get("/audit", response_class=HTMLResponse)
+async def audit_view(request: Request):
+    return templates.TemplateResponse("audit.html", {"request": request})
+
+@app.get("/api/admin/usage_by_client_day")
+async def api_admin_usage_by_client_day(token_name: str = "", date_from: str = "", date_to: str = ""):
+    try:
+        async with httpx.AsyncClient(timeout=15.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/usage_by_client_day",
+                                  params={"token_name": token_name, "date_from": date_from, "date_to": date_to})
+            return r.json()
+    except Exception as e:
+        return {"rows": [], "error": str(e)}
+
+@app.post("/api/admin/audit/run")
+async def api_admin_audit_run(request: Request):
+    try:
+        data = await request.json()
+        async with httpx.AsyncClient(timeout=200.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/audit/run", json=data)
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/admin/audit_config")
+async def api_admin_audit_config():
+    try:
+        async with httpx.AsyncClient(timeout=5.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/audit_config")
+            return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── Request Log View ─────────────────────────────────────────────────────────
 
 @app.get("/log", response_class=HTMLResponse)

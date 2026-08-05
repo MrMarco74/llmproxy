@@ -1,0 +1,10 @@
+# Konfiguration für den Token-Usage-Audit (Dashboard: /audit).
+# Ein lokales Ollama-Modell fasst echte Requests aus einem gewählten Zeitraum
+# zusammen und schlägt Token-Einsparungen, DLP/Guardrail-Regeln und
+# Fallback-Kandidaten vor. Bewusst kein Frontier-Modell, damit das Audit-Tool
+# selbst nicht zum Tokenverbrauch beiträgt, den es eigentlich senken soll.
+enabled: true
+model: "qwen3:8b"
+upstream: 0            # 0 = OLLAMA_UPSTREAM_0, 1 = OLLAMA_UPSTREAM_1
+max_requests: 300       # Obergrenze der in einen Audit-Lauf einbezogenen Requests
+max_chars_per_text: 600 # Kürzung von prompt_text/response_text pro Request im Audit-Prompt

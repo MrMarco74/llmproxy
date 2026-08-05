@@ -180,6 +180,8 @@ _eviction_cfg     = _load_yaml("eviction.yaml",        {"eviction_timeout_min": 
 _notify_cfg       = _load_yaml("notifications.yaml",  {"events": {}})
 _logging_cfg      = _load_yaml("logging.yaml",        {"enabled": True})
 _fallback_cfg     = _load_yaml("fallback.yaml",        {"enabled": False, "mapping": {}})
+_audit_cfg        = _load_yaml("audit.yaml",           {"enabled": True, "model": "qwen3:8b", "upstream": 0,
+                                                          "max_requests": 300, "max_chars_per_text": 600})
 
 _guardrails_cfg = _load_yaml("guardrails.yaml", {"enabled": False, "global_rules": [], "client_rules": {}})
 _fail2ban_cfg = _load_yaml("fail2ban.yaml", {"bans": {}})
@@ -2551,6 +2553,166 @@ async def get_log_filtered(request: Request, token_name: str = "", model: str = 
             "complexity_score","prompt_text","response_text"]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     return {"total": total, "rows": rows}
+
+@app.get("/admin/audit_config")
+async def get_audit_config(request: Request):
+    _check_admin(request)
+    return _audit_cfg
+
+@app.post("/admin/audit_config")
+async def set_audit_config(request: Request):
+    _check_admin(request)
+    global _audit_cfg
+    try:
+        data = await request.json()
+        _audit_cfg = data
+        with open(CONFIG_DIR / "audit.yaml", "w") as f:
+            yaml.safe_dump(_audit_cfg, f)
+        return {"ok": True, "config": _audit_cfg}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/admin/usage_by_client_day")
+async def get_usage_by_client_day(request: Request, token_name: str = "",
+                                   date_from: str = "", date_to: str = ""):
+    _check_admin(request)
+    where_parts = []
+    params: list = []
+    if token_name:
+        where_parts.append("token_name = ?")
+        params.append(token_name)
+    if date_from:
+        where_parts.append("date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("date <= ?")
+        params.append(date_to)
+    where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+    cur = _db().execute(f"""
+        SELECT token_name, date,
+               COUNT(*) as requests,
+               SUM(CASE WHEN is_frontier=1 THEN total_tokens ELSE 0 END) as tokens_frontier,
+               SUM(CASE WHEN is_frontier=0 OR is_frontier IS NULL THEN total_tokens ELSE 0 END) as tokens_local
+        FROM requests {where_sql}
+        GROUP BY token_name, date
+        ORDER BY date DESC, tokens_frontier DESC
+    """, params)
+    rows = [dict(zip(["token_name", "date", "requests", "tokens_frontier", "tokens_local"], r))
+            for r in cur.fetchall()]
+
+    cur2 = _db().execute(f"""
+        SELECT token_name, date, model, COUNT(*) as cnt
+        FROM requests {where_sql}
+        GROUP BY token_name, date, model
+    """, params)
+    top_models: dict[tuple, list] = {}
+    for tn, dt, model, cnt in cur2.fetchall():
+        top_models.setdefault((tn, dt), []).append((model, cnt))
+    for row in rows:
+        key = (row["token_name"], row["date"])
+        models_sorted = sorted(top_models.get(key, []), key=lambda x: -x[1])[:3]
+        row["top_models"] = [{"model": m, "count": c} for m, c in models_sorted]
+
+    return {"rows": rows}
+
+@app.post("/admin/audit/run")
+async def run_audit(request: Request):
+    _check_admin(request)
+    if not _audit_cfg.get("enabled", True):
+        return {"ok": False, "error": "Audit ist deaktiviert (config/audit.yaml)"}
+    data = await request.json()
+    token_name = data.get("token_name", "")
+    date_from = data.get("date_from", "")
+    date_to = data.get("date_to", "")
+
+    where_parts = ["prompt_text IS NOT NULL AND prompt_text != ''"]
+    params: list = []
+    if token_name:
+        where_parts.append("token_name = ?")
+        params.append(token_name)
+    if date_from:
+        where_parts.append("date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("date <= ?")
+        params.append(date_to)
+    where_sql = "WHERE " + " AND ".join(where_parts)
+
+    max_requests = int(_audit_cfg.get("max_requests", 300))
+    max_chars = int(_audit_cfg.get("max_chars_per_text", 600))
+
+    cur = _db().execute(f"""
+        SELECT date, token_name, model, is_frontier, total_tokens, prompt_text, response_text
+        FROM requests {where_sql}
+        ORDER BY total_tokens DESC LIMIT ?
+    """, params + [max_requests])
+    rows = cur.fetchall()
+    if not rows:
+        return {"ok": False, "error": "Keine Requests mit gespeichertem Prompt-Text im gewählten Zeitraum."}
+
+    def _build(include_response: bool, n: int) -> str:
+        lines = []
+        for r in rows[:n]:
+            date, tn, model, is_fr, tt, pt, rt = r
+            pt = (pt or "")[:max_chars]
+            entry = f"[{date}] client={tn} model={model} frontier={bool(is_fr)} tokens={tt}\nPROMPT: {pt}"
+            if include_response and rt:
+                entry += f"\nRESPONSE: {rt[:max_chars]}"
+            lines.append(entry)
+        return "\n---\n".join(lines)
+
+    sample_text = _build(True, len(rows))
+    est_tokens = len(sample_text) // 4
+    if est_tokens > 12000:
+        sample_text = _build(False, len(rows))
+        est_tokens = len(sample_text) // 4
+    n = len(rows)
+    while est_tokens > 12000 and n > 20:
+        n = int(n * 0.7)
+        sample_text = _build(False, n)
+        est_tokens = len(sample_text) // 4
+
+    prompt = f"""Du bist ein Kostenoptimierungs- und Sicherheits-Auditor für einen LLM-Proxy.
+Analysiere die folgenden {n} echten Request-Beispiele (sortiert nach Tokenverbrauch, {"gekürzt" if n < len(rows) else "vollständig"}) und gib konkrete Empfehlungen in drei Abschnitten:
+
+1. TOKEN-EINSPARUNG: Welche Prompt-Muster/Modelle verbrauchen unnötig viele Tokens? Wo könnte gekürzt, gecacht oder gebatcht werden?
+2. DLP/GUARDRAILS: Welche sensiblen Muster (Secrets, PII, interne Daten) tauchen auf, die aktuell nicht gefiltert werden?
+3. FALLBACK-KANDIDATEN: Welche Requests (insbesondere frontier=True) wirken einfach genug für ein kleineres/lokales Modell?
+
+Antworte auf Deutsch, in Stichpunkten pro Abschnitt.
+
+--- REQUESTS ---
+{sample_text}
+"""
+
+    model = _audit_cfg.get("model", "qwen3:8b")
+    upstream_idx = _audit_cfg.get("upstream", 0)
+    upstream_url = OLLAMA_UPSTREAM_0 if upstream_idx == 0 else OLLAMA_UPSTREAM_1
+    if model not in _model_catalog.get(upstream_idx, set()):
+        found = False
+        for idx, names in _model_catalog.items():
+            if model in names:
+                upstream_url = OLLAMA_UPSTREAM_0 if idx == 0 else OLLAMA_UPSTREAM_1
+                found = True
+                break
+        if not found:
+            return {"ok": False, "error": f"Audit-Modell '{model}' auf keinem Ollama-Upstream gefunden."}
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)) as client:
+            r = await client.post(f"{upstream_url}/api/chat", json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+            })
+            r.raise_for_status()
+            report = r.json().get("message", {}).get("content", "")
+    except Exception as e:
+        return {"ok": False, "error": f"Audit-Modell nicht erreichbar: {e}"}
+
+    return {"ok": True, "report": report, "sample_size": n, "total_matching": len(rows),
+            "model": model, "est_prompt_tokens": est_tokens}
 
 @app.get("/admin/bans")
 async def get_bans(request: Request):
