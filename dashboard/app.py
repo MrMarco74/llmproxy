@@ -399,15 +399,9 @@ async def api_admin_models():
 @app.get("/api/admin/clients_usage")
 async def api_admin_clients_usage():
     today = date.today().isoformat()
-    try:
-        rows = _query("SELECT client_ip, tokens_used, tokens_used_local, tokens_used_frontier FROM budgets WHERE date=?", [today])
-    except Exception:
-        # Fallback if DB not migrated yet
-        rows = _query("SELECT client_ip, tokens_used FROM budgets WHERE date=?", [today])
-        return {r["client_ip"]: {"used": r["tokens_used"], "used_local": 0, "used_frontier": 0} for r in rows}
-        
+    rows = _query("SELECT token_name, tokens_used, tokens_used_local, tokens_used_frontier FROM budgets WHERE date=?", [today])
     return {
-        r["client_ip"]: {
+        r["token_name"]: {
             "used": r["tokens_used"],
             "used_local": r["tokens_used_local"],
             "used_frontier": r["tokens_used_frontier"]
