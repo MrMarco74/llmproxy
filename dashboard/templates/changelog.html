@@ -8,6 +8,31 @@
 
 <div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
 
+  <div class="card relative pl-10 border-l-4 border-l-[#f38ba8]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f38ba8] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#f38ba8] text-lg">v2.12.0 &mdash; Wake-on-LAN Fallback f&uuml;r dana + Redirect-Bugfix</h2>
+      <span class="text-sm text-[#7f849c]">5. August 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>WOL-Fallback:</strong> F&auml;llt eine Anfrage wegen dana-Unerreichbarkeit auf ein Frontier-Modell zur&uuml;ck, sendet der Proxy nun automatisch einen Wake-on-LAN-Magic-Packet an dana (gleiche MAC/Broadcast/Port wie das bestehende <code>wakedana</code>-Skript), mit Cooldown um Mehrfachsenden w&auml;hrend des Bootens zu vermeiden. Konfiguration &uuml;ber <code>config/wol.yaml</code>, admin-editable (GET/POST /admin/wol_config) plus manueller Wake-Button und Status-Card im Dashboard.</li>
+      <li><strong>Bugfix Redirect-Aktion:</strong> Guardrail-Regeln mit <code>action=redirect</code> defaulted bisher auf das Modell <code>"local-fallback"</code> — kein reales Modell. Jeder Redirect landete stumm in einer nicht existierenden Zieldefinition. Fix: Default ist nun ein installiertes Modell (<code>qwen3:8b</code>), Plus ein Zielmodell-Dropdown im Regel-Editor (sichtbar bei action=Redirect), beSpeist aus der lokalen Modellliste.</li>
+    </ul>
+  </div>
+
+  <div class="card relative pl-10 border-l-4 border-l-[#fab387]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#fab387] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#fab387] text-lg">v2.11.1 &mdash; Per-Client/Tag Usage-Audit mit lokalem LLM</h2>
+      <span class="text-sm text-[#7f849c]">5. August 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Audit-Ansicht:</strong> Neue Dashboard-Seite (<code>/audit</code>) zeigt Token-Verbrauch gruppiert nach Client und Tag (Local vs. Frontier aufgeteilt, Top-Modelle). Ein „Audit starten"-Button l&auml;sst ein lokales Ollama-Modell (config/audit.yaml, Default <code>qwen3:8b</code>) die token-intensivsten Anfragen im gew&auml;hlten Fenster zusammenfassen und Token-Einsparungen, DLP-/Guardrail-L&uuml;cken sowie Fallback-auf-Kleiner-Modell Kandidaten vorschlagen.</li>
+      <li><strong>Lokales Modell, kein Cost-Armsrace:</strong> Der Audit nutzt bewusst ein lokales Modell statt Frontier, damit das Tool selbst keinen Kostenberg auf dem zu auditierenden Konto erzeugt. Bericht ist ephemer (nicht persistent).</li>
+      <li><strong>Neue Endpunkte:</strong> GET/POST /admin/audit_config, GET /admin/usage_by_client_day, POST /admin/audit/run (Proxy), als Thin-Proxies auch im Dashboard abgebildet.</li>
+    </ul>
+  </div>
+
   <div class="card relative pl-10 border-l-4 border-l-[#a6e3a1]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#a6e3a1] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">
