@@ -242,6 +242,46 @@
     </div>
 
     <div class="card max-w-2xl mt-4">
+        <div class="flex justify-between items-center">
+            <div>
+                <h3 class="font-bold text-[#cdd6f4]">🔌 Wake-on-LAN (dana)</h3>
+                <p class="text-sm text-[#7f849c] mt-1">
+                    Wenn eine Anfrage wegen lokaler Nichterreichbarkeit auf ein Frontier-Modell
+                    umgeleitet wird (siehe Fallback-Tab), sendet der Proxy automatisch ein
+                    Magic Packet an dana, um sie möglichst schnell wieder aufzuwecken
+                    &mdash; begrenzt durch ein Cooldown, damit nicht bei jeder Anfrage
+                    während des Boot-Vorgangs erneut gesendet wird.
+                </p>
+                <div class="flex items-center gap-2 mt-2">
+                    <label class="flex items-center gap-2 cursor-pointer text-sm">
+                        <input type="checkbox" id="wol-enable" class="form-checkbox h-4 w-4 text-[#89b4fa]" onchange="saveWolConfig()">
+                        Automatisches Wecken aktiv
+                    </label>
+                </div>
+                <div class="flex flex-wrap gap-3 mt-2 text-xs items-end">
+                    <div>
+                        <label class="block text-[#7f849c] mb-1">MAC</label>
+                        <input type="text" id="wol-mac" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-[#cdd6f4] w-36 font-mono" onchange="saveWolConfig()">
+                    </div>
+                    <div>
+                        <label class="block text-[#7f849c] mb-1">Broadcast</label>
+                        <input type="text" id="wol-broadcast" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-[#cdd6f4] w-32 font-mono" onchange="saveWolConfig()">
+                    </div>
+                    <div>
+                        <label class="block text-[#7f849c] mb-1">Cooldown (s)</label>
+                        <input type="number" id="wol-cooldown" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-[#cdd6f4] w-20" onchange="saveWolConfig()">
+                    </div>
+                </div>
+            </div>
+            <div class="text-right">
+                <button onclick="wakeDanaNow(this)" class="bg-[#89b4fa] text-[#1e1e2e] px-4 py-2 rounded text-sm font-bold hover:bg-[#b4befe] transition">
+                    ⚡ dana jetzt wecken
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="card max-w-2xl mt-4">
         <div class="flex justify-between items-center mb-2">
             <h3 class="font-bold text-[#cdd6f4]">📋 Admin-Audit-Log</h3>
             <button onclick="fetchAdminActions()" class="text-[#89b4fa] text-sm hover:underline">Aktualisieren</button>
@@ -356,6 +396,7 @@ async function initAdmin() {
     await fetchGuardrails();
     await fetchBans();
     await fetchOllamaLockStatus();
+    await fetchWolConfig();
     await fetchAdminActions();
 }
 
@@ -989,6 +1030,54 @@ async function toggleOllamaLock() {
     }
 }
 
+// Wake-on-LAN (dana)
+async function fetchWolConfig() {
+    try {
+        const r = await fetch('/api/admin/wol_config');
+        const cfg = await r.json();
+        if (cfg.error) return;
+        document.getElementById('wol-enable').checked = !!cfg.enabled;
+        document.getElementById('wol-mac').value = cfg.mac || '';
+        document.getElementById('wol-broadcast').value = cfg.broadcast || '';
+        document.getElementById('wol-cooldown').value = cfg.cooldown_s ?? 300;
+    } catch(e) { console.error("Failed to load WOL config", e); }
+}
+
+async function saveWolConfig() {
+    const cfg = {
+        enabled: document.getElementById('wol-enable').checked,
+        mac: document.getElementById('wol-mac').value.trim(),
+        broadcast: document.getElementById('wol-broadcast').value.trim(),
+        port: 9,
+        cooldown_s: parseInt(document.getElementById('wol-cooldown').value) || 300
+    };
+    try {
+        const r = await fetch('/api/admin/wol_config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(cfg)
+        });
+        const data = await r.json();
+        if (!data.ok) alert('Fehler beim Speichern: ' + (data.error || '?'));
+    } catch(e) { alert('Netzwerkfehler beim Speichern der WOL-Config'); }
+}
+
+async function wakeDanaNow(btn) {
+    btn.disabled = true;
+    const oldText = btn.innerText;
+    btn.innerText = 'Sende Magic Packet...';
+    try {
+        const r = await fetch('/api/proxy/maintenance/wake-dana', {method: 'POST'});
+        const data = await r.json();
+        btn.innerText = data.ok ? '✓ Gesendet!' : 'Fehler';
+        fetchAdminActions();
+    } catch(e) {
+        btn.innerText = 'Fehler';
+    } finally {
+        setTimeout(() => { btn.innerText = oldText; btn.disabled = false; }, 2000);
+    }
+}
+
 // Admin-Actions Audit Log
 async function fetchAdminActions() {
     const tbody = document.getElementById('admin-actions-tbody');
@@ -1282,6 +1371,10 @@ function renderGuardrailRules() {
             <select class="rule-action bg-[#1e1e2e] border border-[#313244] rounded px-1 py-1 text-xs text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'action', this.value)">
                 ${_sel(ACTION_OPTS, rule.action || 'deny')}
             </select>
+            ${rule.action === 'redirect' ? `
+            <select class="rule-target-model bg-[#1e1e2e] border border-[#89b4fa] rounded px-1 py-1 text-xs text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'target_model', this.value)" title="Ziel-Modell bei Redirect">
+                ${_sel(localModels.map(m => ({value: m, label: m})), rule.target_model || 'qwen3:8b')}
+            </select>` : ''}
             <select class="rule-mode bg-[#1e1e2e] border border-[#313244] rounded px-1 py-1 text-xs text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'mode', this.value)">
                 ${_sel(MODE_OPTS, rule.mode || 'enforce')}
             </select>
@@ -1297,6 +1390,7 @@ function addGuardrailRule() {
 
 function updateGuardrailRule(idx, key, value) {
     _getCurrentRuleList()[idx][key] = value;
+    if (key === 'action') renderGuardrailRules();
 }
 
 function deleteGuardrailRule(idx) {

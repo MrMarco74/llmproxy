@@ -109,6 +109,13 @@ GPU_AGENT_URL     = f"http://{GPU_HOST}:11436"
 DB_PATH           = Path("/var/lib/llmproxy/llmproxy.db")
 CONFIG_DIR        = Path("/opt/llmproxy")
 
+# Default für Guardrail-Regeln mit action=redirect, die kein eigenes
+# target_model gesetzt haben (z.B. ältere Regeln aus der Zeit, bevor die UI
+# ein target_model-Feld hatte). Muss ein tatsächlich lokal installiertes,
+# günstiges Modell sein - "local-fallback" (der alte Default) war kein
+# echter Modellname und führte bei Trigger zu einem fehlschlagenden Request.
+DEFAULT_REDIRECT_MODEL = "qwen3:8b"
+
 # Same wildcard cert already used by reverse-proxy for *.internal.familie-frischkorn.de,
 # issued directly on this host (see reverse-proxy/scripts/issue_internal_cert.sh).
 _SSL_CERT         = Path("/etc/letsencrypt/live/internal.familie-frischkorn.de/fullchain.pem")
@@ -182,6 +189,15 @@ _logging_cfg      = _load_yaml("logging.yaml",        {"enabled": True})
 _fallback_cfg     = _load_yaml("fallback.yaml",        {"enabled": False, "mapping": {}})
 _audit_cfg        = _load_yaml("audit.yaml",           {"enabled": True, "model": "qwen3:8b", "upstream": 0,
                                                           "max_requests": 300, "max_chars_per_text": 600})
+# Wake-on-LAN für dana (GPU-Host): wenn eine Anfrage aufgrund von lokaler
+# Nichterreichbarkeit auf ein Frontier-Modell umgeleitet wird, wecken wir dana
+# per Magic Packet, damit möglichst schnell wieder lokal geroutet werden kann,
+# statt dauerhaft auf Frontier zu bleiben. MAC/Broadcast/Port stammen aus dem
+# bereits bestehenden `wakedana`-Skript.
+_wol_cfg          = _load_yaml("wol.yaml",             {"enabled": True, "mac": "18:31:BF:B6:18:F1",
+                                                          "broadcast": "192.168.10.255", "port": 9,
+                                                          "cooldown_s": 300})
+_last_wol_sent    = 0.0
 
 _guardrails_cfg = _load_yaml("guardrails.yaml", {"enabled": False, "global_rules": [], "client_rules": {}})
 _fail2ban_cfg = _load_yaml("fail2ban.yaml", {"bans": {}})
@@ -293,7 +309,7 @@ async def _apply_rules(prompt_text: str, token_name: str, client_ip: str, body: 
                     _record_violation(token_name, client_ip, rule, prompt_text)
                 return False, msg, action, new_body, rule
             if action == "redirect":
-                new_body["model"] = rule.get("target_model", "local-fallback")
+                new_body["model"] = rule.get("target_model") or DEFAULT_REDIRECT_MODEL
                 modified = True
                 _log_to_splunk("guardrail_redirected", {"token_name": token_name, "from": body.get("model"), "to": new_body["model"]})
             if action == "warn" and record:
@@ -616,6 +632,41 @@ async def _notify(event: str, title: str, message: str, priority: str = "default
         logger.info(f"[notify] {event}: {title}")
     except Exception as e:
         logger.error(f"[notify] db error: {e}")
+
+
+def _send_wol_packet() -> bool:
+    """Sendet ein Wake-on-LAN Magic Packet an dana. Gleiche Logik wie das
+    bestehende `~/.local/bin/wakedana`-Skript, hier fest im Proxy verdrahtet,
+    damit der Fallback-Pfad nicht von einem externen Skript abhängt."""
+    try:
+        mac_bytes = bytes.fromhex(_wol_cfg["mac"].replace(":", ""))
+        packet = b"\xff" * 6 + mac_bytes * 16
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.sendto(packet, (_wol_cfg["broadcast"], int(_wol_cfg["port"])))
+        return True
+    except Exception as e:
+        logger.error(f"[wol] Magic Packet fehlgeschlagen: {e}")
+        return False
+
+
+async def _maybe_wake_dana(reason: str):
+    """Bei Frontier-Fallback (lokal nicht erreichbar) versucht, dana per WOL zu
+    wecken - respektiert ein Cooldown, damit nicht bei jeder Anfrage während
+    des Boot-Vorgangs erneut ein Magic Packet verschickt wird."""
+    global _last_wol_sent
+    if not _wol_cfg.get("enabled", True):
+        return
+    now = time.monotonic()
+    cooldown = float(_wol_cfg.get("cooldown_s", 300))
+    if now - _last_wol_sent < cooldown:
+        return
+    _last_wol_sent = now
+    ok = await asyncio.to_thread(_send_wol_packet)
+    if ok:
+        logger.info(f"[wol] Magic Packet an dana gesendet ({reason})")
+        await _notify("wol_wake", "🔌 Wake-on-LAN: dana geweckt",
+                      f"Grund: {reason}. Weitere Wake-Versuche sind für {int(cooldown)}s pausiert.")
 
 # ── Global state ───────────────────────────────────────────────────────────────
 
@@ -1374,6 +1425,7 @@ async def proxy_native(request: Request):
     async def _frontier_fallback_native(reason: str):
         fb_model, fb_base_url, fb_api_key = fb
         logger.warning(f"[fallback] Ollama-Upstream {upstream_idx} {reason} → {model} auf Frontier {fb_model} umgeleitet (native)")
+        await _maybe_wake_dana(f"Upstream {upstream_idx} {reason}")
         _guard_budget_sync(token_name, is_frontier=True)
         openai_body = _native_request_to_openai(body, fb_model)
         fr_resp = await _proxy_frontier_openai(request, openai_body, fb_model, False, client_ip, ua, cx_score,
@@ -1897,6 +1949,7 @@ async def proxy_openai(request: Request):
         if fb and client_cfg.get("frontier_allowed", False):
             fb_model, fb_base_url, fb_api_key = fb
             logger.warning(f"[fallback] Ollama-Upstream {upstream_idx} down (health-check) → {model} auf Frontier {fb_model} umgeleitet")
+            await _maybe_wake_dana(f"Upstream {upstream_idx} down (health-check)")
             _guard_budget_sync(token_name, is_frontier=True)
             body["model"] = fb_model
             return await _proxy_frontier_openai(request, body, fb_model, stream, client_ip, ua, cx_score, fb_base_url, fb_api_key, token_name=token_name)
@@ -1951,6 +2004,7 @@ async def proxy_openai(request: Request):
                 if fb and client_cfg.get("frontier_allowed", False):
                     fb_model, fb_base_url, fb_api_key = fb
                     logger.warning(f"[fallback] Ollama-Upstream {upstream_idx} nicht erreichbar ({e}) → {model} auf Frontier {fb_model} umgeleitet")
+                    await _maybe_wake_dana(f"Upstream {upstream_idx} nicht erreichbar ({e})")
                     _guard_budget_sync(token_name, is_frontier=True)
                     body["model"] = fb_model
                     return await _proxy_frontier_openai(request, body, fb_model, stream, client_ip, ua, cx_score, fb_base_url, fb_api_key, token_name=token_name)
@@ -2999,6 +3053,35 @@ async def maintenance_ollama_unlock(request: Request):
     """Hebt den Ollama-Lock wieder auf — lokale Modelle sind wieder nutzbar."""
     _check_admin(request)
     return await _set_ollama_lock(False, auto=False, reason="Manuell entsperrt (Admin)", client_ip=_get_client_ip(request), token_name=_get_token_name(request))
+
+
+@app.get("/admin/wol_config")
+async def get_wol_config(request: Request):
+    _check_admin(request)
+    return _wol_cfg
+
+@app.post("/admin/wol_config")
+async def set_wol_config(request: Request):
+    _check_admin(request)
+    global _wol_cfg
+    try:
+        data = await request.json()
+        _wol_cfg = data
+        with open(CONFIG_DIR / "wol.yaml", "w") as f:
+            yaml.safe_dump(_wol_cfg, f)
+        return {"ok": True, "config": _wol_cfg}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/maintenance/wake-dana")
+async def maintenance_wake_dana(request: Request):
+    """Sendet sofort (ohne Cooldown) ein Wake-on-LAN Magic Packet an dana."""
+    _check_admin(request)
+    global _last_wol_sent
+    ok = await asyncio.to_thread(_send_wol_packet)
+    _last_wol_sent = time.monotonic()
+    _log_admin_action("wake-dana", "admin", client_ip=_get_client_ip(request), detail="manuell ausgelöst")
+    return {"ok": ok}
 
 
 class GamingOverrideRequestProxy(BaseModel):

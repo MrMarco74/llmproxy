@@ -642,6 +642,34 @@ async def proxy_ollama_unlock():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+@app.post("/api/proxy/maintenance/wake-dana")
+async def proxy_wake_dana():
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/maintenance/wake-dana")
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/admin/wol_config")
+async def api_admin_wol_config_get():
+    try:
+        async with httpx.AsyncClient(timeout=5.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/wol_config")
+            return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/admin/wol_config")
+async def api_admin_wol_config_set(request: Request):
+    try:
+        data = await request.json()
+        async with httpx.AsyncClient(timeout=5.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/wol_config", json=data)
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 @app.get("/api/proxy/health")
 async def proxy_health():
     try:

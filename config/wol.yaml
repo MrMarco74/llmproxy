@@ -1,0 +1,10 @@
+# Wake-on-LAN für dana (GPU-Host): wird ausgelöst, wenn eine Anfrage wegen
+# lokaler Nichterreichbarkeit auf ein Frontier-Modell umgeleitet wird (siehe
+# config/fallback.yaml), damit möglichst schnell wieder lokal geroutet werden
+# kann. MAC/Broadcast/Port entsprechen dem bereits bestehenden
+# ~/.local/bin/wakedana-Skript.
+enabled: true
+mac: "18:31:BF:B6:18:F1"
+broadcast: "192.168.10.255"
+port: 9
+cooldown_s: 300
