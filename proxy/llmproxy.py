@@ -2202,6 +2202,23 @@ async def merged_tags():
     return {"models": list(merged.values())}
 
 
+@app.get("/v1/models")
+async def openai_models():
+    """OpenAI-kompatibles Modell-Listing für /v1/models, gespeist aus demselben
+    gemergten Katalog wie /api/tags - fehlte bisher, wodurch OpenAI-compat Clients
+    (z.B. hermes-agent) beim Verbinden/Modellwechsel ein 404 auf /v1/models sahen.
+    """
+    tags = await merged_tags()
+    now = int(time.time())
+    return {
+        "object": "list",
+        "data": [
+            {"id": m.get("name") or m.get("model"), "object": "model", "created": now, "owned_by": "llmproxy"}
+            for m in tags["models"]
+        ],
+    }
+
+
 @app.post("/api/show")
 async def show_model(request: Request):
     """Wie /api/tags: fragt gezielt den Upstream, der das Modell laut Katalog
@@ -2447,6 +2464,36 @@ async def set_fallback_config(request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
+# ── LLM Config (selected model + proxy settings) ────────────────────────
+
+_llm_config_cfg = _load_yaml("llm_config.yaml", {
+    "proxy_url": "",
+    "api_token": "",
+    "selected_model": "",
+})
+
+
+@app.get("/admin/llm_config")
+async def get_llm_config(request: Request):
+    """GET /admin/llm_config — read the LLM settings (proxy URL, token, selected model)."""
+    _check_admin(request)
+    return dict(_llm_config_cfg)
+
+
+@app.post("/admin/llm_config")
+async def set_llm_config(request: Request):
+    """POST /admin/llm_config — save LLM settings to llm_config.yaml."""
+    _check_admin(request)
+    global _llm_config_cfg
+    try:
+        data = await request.json()
+        _llm_config_cfg.update(data)
+        with open(CONFIG_DIR / "llm_config.yaml", "w") as f:
+            yaml.safe_dump(_llm_config_cfg, f)
+        return {"ok": True, "config": _llm_config_cfg}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.get("/admin/guardrails")
