@@ -90,8 +90,11 @@ at `python -m llmproxy_mcp.server` with those two env vars set.
 
 - `get_guardrails_config()` / `set_guardrails_config(config)` — full
   guardrails config (global + per-client rules). Actions available:
-  `deny`, `silent`, `warn`, `rewrite`, `redirect`, `redirect_internal`,
-  `redirect_external`, `reduce_effort_external`.
+  `deny`, `silent`, `warn`, `notify`, `rewrite`, `redirect`,
+  `redirect_internal`, `redirect_external`, `reduce_effort_external`.
+  Triggers available: `keyword`, `regex`, `dlp`, `output_keyword`,
+  `output_dlp`, `max_length`, `spend_threshold`. Full field reference:
+  [../docs/technical.md](../docs/technical.md#guardrailsyaml).
 - `simulate_guardrail(prompt, token_name="", rules=None)` /
   `simulate_guardrail_batch(token_name="", limit=100, rules=None)` — test a
   rule set against one prompt or the most recent real traffic, without

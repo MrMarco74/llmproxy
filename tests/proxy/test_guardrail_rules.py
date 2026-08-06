@@ -160,6 +160,46 @@ def test_shadow_mode_does_not_apply_action(llmproxy_module):
     assert new_body["model"] == "qwen3:8b"
 
 
+def test_max_length_trigger_fires_over_cap(llmproxy_module):
+    llmproxy = llmproxy_module
+    rules = [{"trigger": "max_length", "max_chars": 20, "action": "deny"}]
+    body = {"model": "qwen3:8b", "prompt": "x" * 21}
+    modified, violation, action, new_body, rule = _run(
+        llmproxy, "x" * 21, "clientA", "1.2.3.4", body, rules, record=False
+    )
+    assert action == "deny"
+
+
+def test_max_length_trigger_noop_under_cap(llmproxy_module):
+    llmproxy = llmproxy_module
+    rules = [{"trigger": "max_length", "max_chars": 20, "action": "deny"}]
+    body = {"model": "qwen3:8b", "prompt": "short"}
+    modified, violation, action, new_body, rule = _run(
+        llmproxy, "short", "clientA", "1.2.3.4", body, rules, record=False
+    )
+    assert action == "pass"
+
+
+def test_notify_action_records_violation_and_pushes_notification(llmproxy_module):
+    llmproxy = llmproxy_module
+    llmproxy._db().execute("DELETE FROM notifications")
+    llmproxy._db().commit()
+    rules = [{"trigger": "keyword", "pattern": "page-me", "action": "notify"}]
+    body = {"model": "qwen3:8b", "prompt": "page-me please"}
+    modified, violation, action, new_body, rule = _run(
+        llmproxy, "page-me please", "clientA", "1.2.3.4", body, rules, record=True
+    )
+    assert action == "pass"  # non-blocking, unlike deny
+    events = llmproxy._db().execute(
+        "SELECT event FROM notifications WHERE event = 'guardrail_triggered'"
+    ).fetchall()
+    assert len(events) == 1
+    violations = llmproxy._db().execute(
+        "SELECT trigger FROM guardrail_events WHERE token_name = 'clientA'"
+    ).fetchall()
+    assert len(violations) == 1
+
+
 def test_no_rules_match_passes_through_unchanged(llmproxy_module):
     llmproxy = llmproxy_module
     rules = [{"trigger": "keyword", "pattern": "nope", "action": "deny"}]

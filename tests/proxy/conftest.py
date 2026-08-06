@@ -56,6 +56,23 @@ def _init_db(db_path: Path):
             id INTEGER PRIMARY KEY, ts TEXT, token_name TEXT, client_ip TEXT,
             action TEXT, trigger TEXT, rule_pattern TEXT, snippet TEXT
         );
+        CREATE TABLE IF NOT EXISTS requests (
+            id INTEGER PRIMARY KEY, ts TEXT, date TEXT, model TEXT,
+            prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0,
+            total_tokens INTEGER DEFAULT 0, token_name TEXT, client_ip TEXT,
+            status_code INTEGER DEFAULT 200, is_frontier INTEGER DEFAULT 0,
+            prompt_text TEXT, response_text TEXT
+        );
+        CREATE TABLE IF NOT EXISTS budgets (
+            token_name TEXT, date TEXT, tokens_used INTEGER DEFAULT 0,
+            tokens_used_local INTEGER DEFAULT 0, tokens_used_frontier INTEGER DEFAULT 0,
+            spend_usd_frontier REAL DEFAULT 0,
+            PRIMARY KEY (token_name, date)
+        );
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY, ts TEXT, event TEXT, title TEXT,
+            message TEXT, priority TEXT, read_at TEXT
+        );
     """)
     con.commit()
     con.close()

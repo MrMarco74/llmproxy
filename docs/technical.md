@@ -460,13 +460,19 @@ Notifications werden intern in der SQLite-Tabelle `notifications` gespeichert un
 enabled: <bool>
 global_rules:
   - trigger: keyword | regex | dlp | output_keyword | output_dlp
+            | max_length | spend_threshold
     pattern: "<string>"          # bei keyword/regex/output_keyword
-    action: deny | silent | warn | rewrite | redirect
+    action: deny | silent | warn | notify | rewrite | redirect
             | redirect_internal | redirect_external | reduce_effort_external
     mode: enforce | monitor | shadow   # shadow: nur loggen, nicht anwenden
     target_model: "<model>"      # bei redirect/redirect_internal/redirect_external
     effort_field: "<field>"      # bei reduce_effort_external, Default: reasoning_effort
     effort_value: <any>          # bei reduce_effort_external, Default: "low"
+    max_chars: <int>             # bei trigger=max_length, Default: 4000
+    max_usd_daily: <float>       # bei trigger=spend_threshold, Frontier-Spend/Tag
+    strike_threshold: <int>      # bei action=deny/silent, Default: 10
+    strike_window_s: <int>       # bei action=deny/silent, Default: 300
+    ban_duration_s: <int>        # bei action=deny/silent, Default: 3600
 client_rules:
   <token_name>:
     rules: [ ... ]                # gleiche Struktur wie global_rules
@@ -483,6 +489,35 @@ eigenen Namen existieren nur, damit das Admin-UI die passende Modellliste
 (lokal vs. Frontier) im Regel-Editor anzeigt. `reduce_effort_external`
 ist eine eigenständige Action und no-opt, wenn das aktuelle Zielmodell
 nicht über `_get_frontier_target()` auflöst (d.h. für lokale Requests).
+
+`max_length` prüft `len(prompt_text)` (Zeichen, nicht echte Tokens,
+gleiche chars/4-Konvention wie an anderen Stellen in dieser Datei) gegen
+`max_chars` — unabhängig von `pattern`, kombinierbar mit jeder Action.
+`spend_threshold` prüft einmal pro Request den bereits heute
+angefallenen Frontier-Spend des Clients (`_get_spend_usd_today()`,
+gespeist von `_add_budget_usage()` über die bestehende
+`_model_cost_usd_eur()`-Preisrechnung) gegen `max_usd_daily` — ebenfalls
+unabhängig vom Prompt-Inhalt, kombinierbar mit `deny` (hart blocken),
+`redirect_internal` (auf lokales Modell zurückfallen) oder
+`reduce_effort_external` (nur Effort senken).
+
+`notify` verhält sich wie `warn` (blockiert nicht, zählt aber weiterhin
+als Violation für Fail2Ban-Strikes), löst zusätzlich aber eine echte
+interne Benachrichtigung über `_notify()` aus (SQLite `notifications` →
+SSE `unread_count` → Dashboard-Glocke + Desktop-Toast) — für Regeln, bei
+denen ein Operator wirklich alarmiert werden soll, nicht nur ein
+stiller Log-Eintrag.
+
+`strike_threshold`/`strike_window_s`/`ban_duration_s` sind optionale
+Overrides auf `deny`/`silent`-Regeln für das bestehende Fail2Ban
+(`_record_violation()`) — der Strike-Zähler bleibt weiterhin ein
+einzelner Zähler pro `token_name` (nicht pro Regel), aber welche
+Schwelle/welches Fenster/welche Sperrdauer beim Auswerten benutzt wird,
+kommt jetzt von der gerade ausgelösten Regel. Eine als schwerwiegend
+markierte Regel (`strike_threshold: 1`) sperrt sofort, während eine
+milde Regel weiterhin den Default von 10 Verstößen in 300s braucht.
+Defaults entsprechen exakt dem alten, fest einprogrammierten Verhalten —
+bestehende Regeln ohne diese Felder sind unverändert.
 
 ### `splunk.yaml`
 

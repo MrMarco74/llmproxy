@@ -8,6 +8,21 @@
 
 <div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
 
+  <div class="card relative pl-10 border-l-4 border-l-[#cba6f7]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#cba6f7] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#cba6f7] text-lg">v2.18.0 &mdash; Chargeback-Guardrail, Per-Rule Strikes, Length-Cap &amp; Notify-Action</h2>
+      <span class="text-sm text-[#7f849c]">6. August 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Chargeback-gekoppeltes Guardrail:</strong> Neuer Trigger <code>spend_threshold</code> pr&uuml;ft den bereits heute angefallenen Frontier-Spend eines Clients (<code>max_usd_daily</code>) &mdash; kombinierbar mit <code>deny</code>, <code>redirect_internal</code> oder <code>reduce_effort_external</code>, um Kostenexplosionen automatisch zu bremsen statt nur im Nachhinein sichtbar zu machen.</li>
+      <li><strong>Per-Rule Fail2Ban:</strong> <code>strike_threshold</code>/<code>strike_window_s</code>/<code>ban_duration_s</code> sind jetzt optionale Felder pro Regel (Default weiterhin 10 Verst&ouml;&szlig;e/300s/3600s) &mdash; eine als schwerwiegend markierte Regel kann so sofort sperren, statt auf denselben globalen Schwellenwert wie jede andere Regel zu warten.</li>
+      <li><strong>Prompt-L&auml;ngen-Cap:</strong> Neuer Trigger <code>max_length</code> (Zeichen-basiert) blockt/warnt/leitet um, unabh&auml;ngig vom Prompt-Inhalt &mdash; direkter Schutz gegen Token-Burn durch überlange Prompts.</li>
+      <li><strong>Notify-Action:</strong> Neue Action <code>notify</code> l&ouml;st &mdash; anders als das rein loggende <code>warn</code> &mdash; eine echte interne Benachrichtigung aus (Dashboard-Glocke + Desktop-Toast), f&uuml;r Regeln, bei denen ein Operator aktiv alarmiert werden soll.</li>
+      <li><strong>Bugfix /audit:</strong> "Audit starten" beendete sich bei deaktiviertem Database-Logging sofort mit einer irref&uuml;hrenden "keine Requests im Zeitraum"-Meldung &mdash; jetzt eine eigene, eindeutige Fehlermeldung ("Database Logging ist deaktiviert"), plus deutlich sichtbarere Fehlerdarstellung im Audit-Report.</li>
+    </ul>
+  </div>
+
   <div class="card relative pl-10 border-l-4 border-l-[#94e2d5]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#94e2d5] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">
@@ -34,6 +49,12 @@
     </ul>
   </div>
 
+  <div class="text-center -my-1">
+    <button id="changelog-toggle" onclick="toggleOlderChangelog()" class="text-sm text-[#89b4fa] hover:underline">Ältere Einträge anzeigen ▾</button>
+  </div>
+
+  <div id="changelog-older" class="hidden space-y-4">
+
   <div class="card relative pl-10 border-l-4 border-l-[#f38ba8]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f38ba8] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">
@@ -47,12 +68,6 @@
       <li><strong>Secrets verschl&uuml;sselt statt Klartext:</strong> Client-Bearer-Tokens und Frontier-Provider-API-Keys lagen bisher im Klartext in <code>clients.yaml</code>/<code>frontier.yaml</code> (mit-committed in Git). Beide wandern jetzt in eine Fernet-verschl&uuml;sselte <code>secrets</code>-Tabelle &mdash; bestehende Client-Tokens funktionieren unver&auml;ndert weiter (keine Neuverteilung n&ouml;tig), Frontier-Keys werden im Admin-UI nur noch maskiert angezeigt.</li>
     </ul>
   </div>
-
-  <div class="text-center -my-1">
-    <button id="changelog-toggle" onclick="toggleOlderChangelog()" class="text-sm text-[#89b4fa] hover:underline">Ältere Einträge anzeigen ▾</button>
-  </div>
-
-  <div id="changelog-older" class="hidden space-y-4">
 
   <div class="card relative pl-10 border-l-4 border-l-[#fab387]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#fab387] border-4 border-[#1e1e2e]"></div>

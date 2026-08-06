@@ -26,7 +26,7 @@ def test_changelog_wraps_older_entries_in_hidden_container(dashboard_module):
     assert 'id="changelog-older" class="hidden' in html
     assert 'onclick="toggleOlderChangelog()"' in html
 
-    newest_idx = html.index("v2.17.0")
+    newest_idx = html.index("v2.18.0")
     older_wrapper_idx = html.index('id="changelog-older"')
-    older_entry_idx = html.index("v2.14.1")
+    older_entry_idx = html.index("v2.15.0")
     assert newest_idx < older_wrapper_idx < older_entry_idx

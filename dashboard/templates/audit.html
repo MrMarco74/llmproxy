@@ -159,10 +159,10 @@ async function runAudit() {
         <div class="whitespace-pre-wrap font-mono text-sm text-[#cdd6f4]">${escHtml(data.report)}</div>
       `;
     } else {
-      out.innerHTML = `<span class="text-[#f38ba8]">Fehler: ${escHtml(data.error || 'Unbekannter Fehler')}</span>`;
+      out.innerHTML = `<div class="rounded p-3 border border-[#f38ba8] bg-[#f38ba81a] text-[#f38ba8] font-bold">⚠ Fehler: ${escHtml(data.error || 'Unbekannter Fehler')}</div>`;
     }
   } catch (e) {
-    out.innerHTML = `<span class="text-[#f38ba8]">Fehler: ${e}</span>`;
+    out.innerHTML = `<div class="rounded p-3 border border-[#f38ba8] bg-[#f38ba81a] text-[#f38ba8] font-bold">⚠ Netzwerkfehler: ${e}</div>`;
   } finally {
     btn.disabled = false;
     btn.textContent = '🔍 Audit starten';

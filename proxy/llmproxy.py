@@ -35,7 +35,7 @@ Features:
     (fixes vision/rare models silently 404ing on load-balanced round-robin)
 """
 
-__version__ = "2.7.0"
+__version__ = "2.17.0"
 
 import asyncio
 import datetime
@@ -289,18 +289,30 @@ def _record_violation(token_name: str, client_ip: str, rule: dict, prompt: str):
     except Exception as e:
         logger.error(f"[guardrails] sqlite error: {e}")
 
-    # Track in memory for Fail2Ban
+    # Track in memory for Fail2Ban. The strike counter itself stays one
+    # global list per token (as before) -- but the threshold/window/
+    # duration used to evaluate and act on it now comes from whichever
+    # rule just fired, via optional per-rule overrides (defaults below
+    # match the previous hardcoded behavior exactly, so existing
+    # guardrails.yaml rules are unaffected). Lets a rule marked severe
+    # (e.g. strike_threshold: 1) ban immediately while a mild one still
+    # needs the default 10.
+    strike_threshold = int(rule.get("strike_threshold", 10))
+    strike_window_s = float(rule.get("strike_window_s", 300))
+    ban_duration_s = float(rule.get("ban_duration_s", 3600))
+
     if not hasattr(_record_violation, "strikes"):
         _record_violation.strikes = {}
     strikes = _record_violation.strikes.setdefault(token_name, [])
-    strikes = [s for s in strikes if now - s < 300]
+    strikes = [s for s in strikes if now - s < strike_window_s]
     strikes.append(now)
     _record_violation.strikes[token_name] = strikes
-    
-    if len(strikes) >= 10:
-        _fail2ban_cfg.setdefault("bans", {})[token_name] = now + 3600
+
+    if len(strikes) >= strike_threshold:
+        _fail2ban_cfg.setdefault("bans", {})[token_name] = now + ban_duration_s
         with open(CONFIG_DIR / "fail2ban.yaml", "w") as f:
             yaml.safe_dump(_fail2ban_cfg, f)
+        _log_to_splunk("guardrail_fail2ban", {"token_name": token_name, "duration": ban_duration_s})
         _log_to_splunk("guardrail_fail2ban", {"token_name": token_name, "duration": 3600})
 
 
@@ -345,6 +357,17 @@ async def _apply_rules(prompt_text: str, token_name: str, client_ip: str, body: 
                     hit = True
             except Exception:
                 pass
+        elif trigger == "max_length":
+            # Char count, not a real tokenizer -- same chars/4 estimate
+            # convention used elsewhere in this file (complexity scorer,
+            # audit endpoint). Independent of `pattern`.
+            hit = len(prompt_text) > int(rule.get("max_chars", 4000))
+        elif trigger == "spend_threshold":
+            # Evaluated once per request against the client's running
+            # daily frontier spend (_add_budget_usage), not against
+            # prompt content -- fires regardless of what's in the prompt
+            # once the client is over budget for today.
+            hit = _get_spend_usd_today(token_name) > float(rule.get("max_usd_daily", 0))
 
         if hit:
             msg = f"Triggered {trigger}: {pattern!r}"
@@ -385,6 +408,17 @@ async def _apply_rules(prompt_text: str, token_name: str, client_ip: str, body: 
                                                                   "field": effort_field, "value": effort_value})
             if action == "warn" and record:
                 _record_violation(token_name, client_ip, rule, prompt_text)
+            if action == "notify":
+                # Distinct from "warn": warn only logs silently, notify is
+                # for the subset of rules an operator actually wants to be
+                # paged about -- reuses the same internal notification
+                # system gaming-mode/budget/reboot alerts already use
+                # (SQLite notifications table -> SSE unread_count ->
+                # dashboard bell + desktop toast). Non-blocking, like warn.
+                if record:
+                    _record_violation(token_name, client_ip, rule, prompt_text)
+                await _notify("guardrail_triggered", f"🛡️ Guardrail: {trigger}",
+                              f"token={token_name} pattern={pattern!r} snippet={prompt_text[:150]!r}")
 
     if modified:
         if "messages" in new_body and isinstance(new_body["messages"], list) and new_body["messages"]:
@@ -521,6 +555,7 @@ def _db_init():
             tokens_used         INTEGER DEFAULT 0,
             tokens_used_local   INTEGER DEFAULT 0,
             tokens_used_frontier INTEGER DEFAULT 0,
+            spend_usd_frontier  REAL DEFAULT 0,
             PRIMARY KEY (token_name, date)
         );
         CREATE TABLE IF NOT EXISTS client_profiles (
@@ -592,7 +627,8 @@ def _db_init():
             con.execute(f"ALTER TABLE requests ADD COLUMN {col_def}")
         except Exception:
             pass
-    for col_def in ["tokens_used_local INTEGER DEFAULT 0", "tokens_used_frontier INTEGER DEFAULT 0"]:
+    for col_def in ["tokens_used_local INTEGER DEFAULT 0", "tokens_used_frontier INTEGER DEFAULT 0",
+                     "spend_usd_frontier REAL DEFAULT 0"]:
         try:
             con.execute(f"ALTER TABLE budgets ADD COLUMN {col_def}")
         except Exception:
@@ -1298,7 +1334,8 @@ def _check_budget(token_name: str, is_frontier: bool = False) -> tuple[bool, int
     return limit == -1 or used < limit, used, limit
 
 
-def _add_budget_usage(token_name: str, tokens: int, is_frontier: bool = False):
+def _add_budget_usage(token_name: str, tokens: int, is_frontier: bool = False,
+                       model: str = "", prompt_tokens: int = 0, completion_tokens: int = 0):
     today = datetime.date.today().isoformat()
     col = "tokens_used_frontier" if is_frontier else "tokens_used_local"
     try:
@@ -1310,6 +1347,34 @@ def _add_budget_usage(token_name: str, tokens: int, is_frontier: bool = False):
         _db().commit()
     except Exception:
         pass
+
+    # Chargeback-linked guardrail support (spend_threshold trigger, see
+    # _apply_rules): only frontier usage costs anything, so this is a
+    # no-op for local requests. Uses the same dual-currency pricing math
+    # already built for the chargeback API (_model_cost_usd_eur).
+    if is_frontier and model:
+        usd, _eur = _model_cost_usd_eur(model, prompt_tokens, completion_tokens)
+        if usd:
+            try:
+                _db().execute(
+                    "INSERT INTO budgets (token_name, date, spend_usd_frontier) VALUES (?,?,?) "
+                    "ON CONFLICT(token_name, date) DO UPDATE SET spend_usd_frontier = spend_usd_frontier + ?",
+                    [token_name, today, usd, usd]
+                )
+                _db().commit()
+            except Exception:
+                pass
+
+
+def _get_spend_usd_today(token_name: str) -> float:
+    today = datetime.date.today().isoformat()
+    try:
+        row = _db().execute(
+            "SELECT spend_usd_frontier FROM budgets WHERE token_name=? AND date=?", [token_name, today]
+        ).fetchone()
+        return row[0] if row and row[0] else 0.0
+    except Exception:
+        return 0.0
 
 
 async def _check_budget_warnings(token_name: str, is_frontier: bool = False):
@@ -1608,7 +1673,8 @@ async def proxy_native(request: Request):
                                complexity_score=cx_score, predicted_duration_s=pred_dur,
                                status_code=resp.status_code, is_frontier=int(is_frontier),
                                hostname=hostname, prompt_text=prompt_text, response_text=resp_text)
-            _add_budget_usage(token_name, pt+ct, is_frontier=is_frontier)
+            _add_budget_usage(token_name, pt+ct, is_frontier=is_frontier, model=model,
+                               prompt_tokens=pt, completion_tokens=ct)
             await _check_budget_warnings(token_name, is_frontier=is_frontier)
             if _check_tps_anomaly(model, tps, ct):
                 _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint=path,
@@ -1670,7 +1736,8 @@ async def proxy_native(request: Request):
                            client_ip=client_ip, token_name=token_name, user_agent=ua, endpoint=path, stream=1,
                            num_ctx=num_ctx, complexity_score=cx_score, predicted_duration_s=pred_dur,
                            hostname=hostname, prompt_text=prompt_text, response_text=resp_text, is_frontier=int(is_frontier))
-        _add_budget_usage(token_name, pt+ct, is_frontier=is_frontier)
+        _add_budget_usage(token_name, pt+ct, is_frontier=is_frontier, model=model,
+                           prompt_tokens=pt, completion_tokens=ct)
         await _check_budget_warnings(token_name, is_frontier=is_frontier)
         if _check_tps_anomaly(model, tps, ct):
             _db_log_failure(model=model, client_ip=client_ip, token_name=token_name, endpoint=path,
@@ -1939,7 +2006,8 @@ async def _proxy_frontier_openai(request, body, model, stream, client_ip, ua, cx
             routed_from=None, hostname=hostname, prompt_text=prompt_text, response_text=resp_text[:2000],
             is_frontier=1
         )
-        _add_budget_usage(token_name, pt+ct, is_frontier=True)
+        _add_budget_usage(token_name, pt+ct, is_frontier=True, model=model,
+                           prompt_tokens=pt, completion_tokens=ct)
         return tps
 
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
@@ -3383,11 +3451,21 @@ async def revoke_api_key(key_id: str, request: Request):
     return {"ok": True}
 
 
-@app.post("/admin/audit/run")
+@app.post("/admin/audit/run", tags=["Guardrails"])
 async def run_audit(request: Request):
     _check_admin(request)
     if not _audit_cfg.get("enabled", True):
-        return {"ok": False, "error": "Audit ist deaktiviert (config/audit.yaml)"}
+        return {"ok": False, "error": "Audit ist deaktiviert (config/audit.yaml: enabled=false)"}
+    if not _logging_cfg.get("enabled", True):
+        # Prompt/response text is only ever stored while Database Logging
+        # is on (_db_insert_request strips those two columns otherwise) --
+        # without this check, an audit run with logging off looks
+        # identical to "no requests matched the filter" below, which sends
+        # the user chasing the wrong fix (date/client filter instead of
+        # the Log Settings toggle).
+        return {"ok": False, "error": "Database Logging ist deaktiviert (Settings → Log) — "
+                                       "ohne Logging wird kein Prompt-/Response-Text gespeichert, "
+                                       "den der Audit auswerten könnte."}
     data = await request.json()
     token_name = data.get("token_name", "")
     date_from = data.get("date_from", "")
