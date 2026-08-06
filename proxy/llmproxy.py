@@ -54,6 +54,7 @@ import httpx
 import uvicorn
 import websockets
 import yaml
+from cryptography.fernet import Fernet
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -201,12 +202,32 @@ _last_wol_sent    = 0.0
 
 _guardrails_cfg = _load_yaml("guardrails.yaml", {"enabled": False, "global_rules": [], "client_rules": {}})
 _fail2ban_cfg = _load_yaml("fail2ban.yaml", {"bans": {}})
-_pricing_cfg = _load_yaml("pricing.yaml", {"currency": "EUR", "models": {}, "default": {"input_per_1k": 0.0, "output_per_1k": 0.0}})
+_pricing_cfg = _load_yaml("pricing.yaml", {
+    "fx": {"usd_to_eur": 0.92, "updated": "", "source": ""},
+    "models": {}, "default": {"currency": "USD", "input_per_1k": 0.0, "output_per_1k": 0.0}})
 
-def _model_cost_eur(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+def _model_cost_native(model: str, prompt_tokens: int, completion_tokens: int) -> tuple[float, str]:
+    """Cost in whatever currency the model is actually billed in (per
+    config/pricing.yaml), not yet converted."""
     p = _pricing_cfg.get("models", {}).get(model) or _pricing_cfg.get("default", {})
-    return (prompt_tokens or 0) / 1000 * p.get("input_per_1k", 0.0) + \
-           (completion_tokens or 0) / 1000 * p.get("output_per_1k", 0.0)
+    amount = (prompt_tokens or 0) / 1000 * p.get("input_per_1k", 0.0) + \
+             (completion_tokens or 0) / 1000 * p.get("output_per_1k", 0.0)
+    currency = p.get("currency", "USD")
+    return amount, currency
+
+def _to_usd_eur(amount: float, currency: str) -> tuple[float, float]:
+    """Converts a native-currency amount to (usd, eur) using the single
+    fx.usd_to_eur rate in pricing.yaml. Only USD and EUR native currencies
+    are expected in practice; anything else is treated as already-USD
+    rather than silently dropping the amount."""
+    rate = _pricing_cfg.get("fx", {}).get("usd_to_eur", 0.92)
+    if currency == "EUR":
+        return (amount / rate if rate else 0.0), amount
+    return amount, amount * rate
+
+def _model_cost_usd_eur(model: str, prompt_tokens: int, completion_tokens: int) -> tuple[float, float]:
+    amount, currency = _model_cost_native(model, prompt_tokens, completion_tokens)
+    return _to_usd_eur(amount, currency)
 
 from presidio_analyzer import AnalyzerEngine
 
@@ -495,6 +516,31 @@ def _db_init():
             trigger     TEXT,
             rule_pattern TEXT,
             snippet     TEXT
+        );
+        CREATE TABLE IF NOT EXISTS users (
+            id              INTEGER PRIMARY KEY,
+            username        TEXT UNIQUE NOT NULL,
+            password_hash   TEXT NOT NULL,
+            role            TEXT NOT NULL,
+            created_at      TEXT,
+            last_login_at   TEXT,
+            disabled        INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id              INTEGER PRIMARY KEY,
+            key_id          TEXT UNIQUE NOT NULL,
+            secret_hash     TEXT NOT NULL,
+            owner_type      TEXT NOT NULL,
+            owner_name      TEXT NOT NULL,
+            role            TEXT NOT NULL,
+            created_at      TEXT,
+            last_used_at    TEXT,
+            disabled        INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS secrets (
+            name            TEXT PRIMARY KEY,
+            value_encrypted BLOB NOT NULL,
+            updated_at      TEXT
         );
     """)
     for col_def in ["hostname TEXT", "prompt_text TEXT", "response_text TEXT", "is_frontier INTEGER DEFAULT 0", "token_name TEXT"]:
@@ -2767,12 +2813,14 @@ def _chargeback_summary_rows(token_name: str, date_from: str, date_to: str, grou
                                              "requests_local": 0, "requests_frontier": 0,
                                              "prompt_tokens": 0, "completion_tokens": 0,
                                              "total_tokens": 0, "tokens_local": 0, "tokens_frontier": 0,
-                                             "cost_eur": 0.0})
+                                             "cost_usd": 0.0, "cost_eur": 0.0})
         row["requests"] += requests
         row["prompt_tokens"] += ptok or 0
         row["completion_tokens"] += ctok or 0
         row["total_tokens"] += ttok or 0
-        row["cost_eur"] += _model_cost_eur(model, ptok or 0, ctok or 0)
+        usd, eur = _model_cost_usd_eur(model, ptok or 0, ctok or 0)
+        row["cost_usd"] += usd
+        row["cost_eur"] += eur
         if is_frontier:
             row["requests_frontier"] += requests
             row["tokens_frontier"] += ttok or 0
@@ -2783,6 +2831,7 @@ def _chargeback_summary_rows(token_name: str, date_from: str, date_to: str, grou
             unpriced.add(model)
     rows = list(agg.values())
     for row in rows:
+        row["cost_usd"] = round(row["cost_usd"], 6)
         row["cost_eur"] = round(row["cost_eur"], 6)
         if group_by == "none":
             row.pop("date", None)
@@ -2797,7 +2846,7 @@ async def chargeback_summary(request: Request, token_name: str = "",
     if group_by not in ("day", "month", "none"):
         group_by = "day"
     rows, unpriced = _chargeback_summary_rows(token_name, date_from, date_to, group_by)
-    return {"rows": rows, "currency": _pricing_cfg.get("currency", "EUR"), "unpriced_models": unpriced}
+    return {"rows": rows, "fx": _pricing_cfg.get("fx", {}), "unpriced_models": unpriced}
 
 def _chargeback_drilldown_rows(token_name: str, date_from: str, date_to: str):
     where_sql, params = _chargeback_where(token_name, "", date_from, date_to)
@@ -2817,12 +2866,14 @@ def _chargeback_drilldown_rows(token_name: str, date_from: str, date_to: str):
         row = agg.setdefault(ip, {"client_ip": ip, "requests": 0, "prompt_tokens": 0,
                                    "completion_tokens": 0, "total_tokens": 0,
                                    "tokens_local": 0, "tokens_frontier": 0,
-                                   "cost_eur": 0.0, "last_seen": last_seen})
+                                   "cost_usd": 0.0, "cost_eur": 0.0, "last_seen": last_seen})
         row["requests"] += requests
         row["prompt_tokens"] += ptok or 0
         row["completion_tokens"] += ctok or 0
         row["total_tokens"] += ttok or 0
-        row["cost_eur"] += _model_cost_eur(model, ptok or 0, ctok or 0)
+        usd, eur = _model_cost_usd_eur(model, ptok or 0, ctok or 0)
+        row["cost_usd"] += usd
+        row["cost_eur"] += eur
         if is_frontier:
             row["tokens_frontier"] += ttok or 0
         else:
@@ -2831,8 +2882,9 @@ def _chargeback_drilldown_rows(token_name: str, date_from: str, date_to: str):
             row["last_seen"] = last_seen
         if model not in _pricing_cfg.get("models", {}):
             unpriced.add(model)
-    rows = sorted(agg.values(), key=lambda r: -r["cost_eur"])
+    rows = sorted(agg.values(), key=lambda r: -r["cost_usd"])
     for row in rows:
+        row["cost_usd"] = round(row["cost_usd"], 6)
         row["cost_eur"] = round(row["cost_eur"], 6)
     return rows, sorted(unpriced)
 
@@ -2844,7 +2896,7 @@ async def chargeback_drilldown(request: Request, token_name: str = "",
         raise HTTPException(status_code=400, detail="token_name is required")
     rows, unpriced = _chargeback_drilldown_rows(token_name, date_from, date_to)
     return {"token_name": token_name, "rows": rows,
-            "currency": _pricing_cfg.get("currency", "EUR"), "unpriced_models": unpriced}
+            "fx": _pricing_cfg.get("fx", {}), "unpriced_models": unpriced}
 
 def _chargeback_detail_rows(token_name: str, client_ip: str, model: str,
                              date_from: str, date_to: str, limit: int, offset: int):
@@ -2878,7 +2930,9 @@ def _chargeback_detail_rows(token_name: str, client_ip: str, model: str,
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     unpriced = set()
     for row in rows:
-        row["cost_eur"] = round(_model_cost_eur(row["model"], row["prompt_tokens"], row["completion_tokens"]), 6)
+        usd, eur = _model_cost_usd_eur(row["model"], row["prompt_tokens"], row["completion_tokens"])
+        row["cost_usd"] = round(usd, 6)
+        row["cost_eur"] = round(eur, 6)
         if row["model"] not in _pricing_cfg.get("models", {}):
             unpriced.add(row["model"])
     return total, rows, sorted(unpriced)
@@ -2891,7 +2945,7 @@ async def chargeback_detail(request: Request, token_name: str = "", client_ip: s
     limit = max(1, min(limit, 500))
     total, rows, unpriced = _chargeback_detail_rows(token_name, client_ip, model,
                                                       date_from, date_to, limit, offset)
-    return {"total": total, "rows": rows, "currency": _pricing_cfg.get("currency", "EUR"),
+    return {"total": total, "rows": rows, "fx": _pricing_cfg.get("fx", {}),
             "unpriced_models": unpriced}
 
 @app.get("/admin/chargeback/pricing")
@@ -2934,7 +2988,7 @@ async def chargeback_export(request: Request, view: str = "summary", format: str
         rows, _unpriced = _chargeback_summary_rows(token_name, date_from, date_to, group_by)
         fieldnames = ["token_name", "requests", "requests_local", "requests_frontier",
                       "prompt_tokens", "completion_tokens", "total_tokens",
-                      "tokens_local", "tokens_frontier", "cost_eur"]
+                      "tokens_local", "tokens_frontier", "cost_usd", "cost_eur"]
         if group_by != "none":
             fieldnames.insert(1, "date")
     elif view == "drilldown":
@@ -2942,13 +2996,14 @@ async def chargeback_export(request: Request, view: str = "summary", format: str
             raise HTTPException(status_code=400, detail="token_name is required for drilldown export")
         rows, _unpriced = _chargeback_drilldown_rows(token_name, date_from, date_to)
         fieldnames = ["client_ip", "requests", "prompt_tokens", "completion_tokens",
-                      "total_tokens", "tokens_local", "tokens_frontier", "cost_eur", "last_seen"]
+                      "total_tokens", "tokens_local", "tokens_frontier", "cost_usd", "cost_eur", "last_seen"]
     else:  # detail
         _total, rows, _unpriced = _chargeback_detail_rows(
             token_name, client_ip, model, date_from, date_to,
             limit=_CHARGEBACK_EXPORT_ROW_CAP, offset=0)
         fieldnames = ["id", "ts", "date", "token_name", "client_ip", "model",
-                      "prompt_tokens", "completion_tokens", "total_tokens", "is_frontier", "cost_eur"]
+                      "prompt_tokens", "completion_tokens", "total_tokens", "is_frontier",
+                      "cost_usd", "cost_eur"]
 
     filename = f"chargeback_{view}_{datetime.date.today().isoformat()}.{format}"
 
@@ -3709,6 +3764,48 @@ def _load_or_create_chargeback_token() -> str:
     return tok
 
 _CHARGEBACK_TOKEN = _load_or_create_chargeback_token()
+
+def _load_or_create_secret_key() -> bytes:
+    """Fernet key protecting the `secrets` table at rest (client bearer
+    tokens preserved-not-rotated, frontier provider api_keys) -- same
+    generate-once-and-persist pattern as the admin/chargeback tokens."""
+    p = Path("/opt/llmproxy/.secret_key")
+    if p.exists():
+        return p.read_bytes().strip()
+    key = Fernet.generate_key()
+    # Create with 0600 atomically -- unlike write_bytes()+chmod(), there's no
+    # window where the key material is readable at default (world-readable)
+    # permissions before the mode gets tightened. This key protects every
+    # value in the `secrets` table, so it's worth the extra care even though
+    # the existing .admin_token/.chargeback_token use the simpler pattern.
+    fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, key)
+    finally:
+        os.close(fd)
+    logger.warning(f"[secrets] no secret key found — generated a new one at {p}")
+    return key
+
+_FERNET = Fernet(_load_or_create_secret_key())
+
+def _encrypt_secret(value: str) -> bytes:
+    return _FERNET.encrypt(value.encode("utf-8"))
+
+def _decrypt_secret(blob: bytes) -> str:
+    return _FERNET.decrypt(blob).decode("utf-8")
+
+def _get_secret(name: str) -> str | None:
+    row = _db().execute("SELECT value_encrypted FROM secrets WHERE name = ?", (name,)).fetchone()
+    return _decrypt_secret(row[0]) if row else None
+
+def _set_secret(name: str, value: str):
+    con = _db()
+    con.execute(
+        "INSERT INTO secrets (name, value_encrypted, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET value_encrypted=excluded.value_encrypted, updated_at=excluded.updated_at",
+        (name, _encrypt_secret(value), datetime.datetime.utcnow().isoformat())
+    )
+    con.commit()
 
 GAMING_SERVICES  = ["ollama", "comfyui", "comfyui2", "open-webui"]
 RESTORE_SERVICES = ["ollama", "comfyui", "comfyui2"]

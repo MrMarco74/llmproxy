@@ -1,19 +1,31 @@
-currency: EUR
-# Preise pro 1000 Tokens. Modelle ohne Eintrag hier fallen auf `default`
-# zurück (0 € — i.d.R. lokal gehostete Ollama-Modelle ohne externe Abrechnung)
-# und werden in den Chargeback-Reports als "unpriced_models" markiert.
+# Preise pro 1000 Tokens, in der Währung, in der das Modell tatsächlich
+# abgerechnet wird (`currency:` pro Modell). Umrechnung in die jeweils
+# andere Anzeige-Währung (USD/EUR, in Reports/Exports immer beide) läuft
+# zur Anzeigezeit über den einzelnen `fx.usd_to_eur`-Kurs unten — es werden
+# keine zwei getrennten Preisangaben pro Modell gepflegt, die auseinanderlaufen
+# könnten.
+#
+# Modelle ohne Eintrag hier fallen auf `default` zurück (0 — i.d.R. lokal
+# gehostete Ollama-Modelle ohne externe Abrechnung) und werden in den
+# Chargeback-Reports als "unpriced_models" markiert.
 #
 # Editierbar über GET/POST /admin/chargeback/pricing (Dashboard: /chargeback
 # → ⚙ Preise) — diese Datei ist nur der Erst-Seed für neue Installationen,
 # spätere Preisänderungen bitte über den Admin-Endpoint einpflegen, nicht
 # durch Redeploy (config/pricing.yaml wird nach dem ersten Seed nicht mehr
 # überschrieben, genau wie clients.yaml/frontier.yaml).
+fx:
+  usd_to_eur: 0.92
+  updated: "2026-08-06"
+  source: "manual estimate — replace with the real invoiced/ECB rate when known"
 models:
   models/gemini-3.6-flash:
-    # $1.50 / $7.50 per 1M tokens (USD, Aug 2026 rate cards), grob umgerechnet
-    # zu ~0,92 EUR/USD -- Wechselkurs-Näherung, keine Rechnungsbasis.
-    input_per_1k: 0.00138
-    output_per_1k: 0.0069
+    # $1.50 / $7.50 per 1M tokens (USD, public rate-card trackers, Aug 2026 —
+    # not confirmed against an actual Google invoice).
+    currency: USD
+    input_per_1k: 0.0015
+    output_per_1k: 0.0075
 default:
+  currency: USD
   input_per_1k: 0.0
   output_per_1k: 0.0

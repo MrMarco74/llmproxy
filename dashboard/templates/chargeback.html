@@ -14,7 +14,9 @@
   <div id="cb_pricing_wrap" class="card mb-4 hidden">
     <div class="text-sm font-semibold text-[#f9e2af] mb-2">💶 Modellpreise (config/pricing.yaml)</div>
     <p class="text-xs text-[#7f849c] mb-2">
-      €/1k Tokens pro Modell. Modelle ohne Eintrag fallen auf <code>default</code> zurück (0€ — lokale Ollama-Modelle brauchen normalerweise keinen Eintrag).
+      Preis pro 1k Tokens, in der Währung, in der das Modell tatsächlich abgerechnet wird (<code>currency</code> pro Modell, meist <code>USD</code>).
+      Modelle ohne Eintrag fallen auf <code>default</code> zurück (0 — lokale Ollama-Modelle brauchen normalerweise keinen Eintrag).
+      Reports/Exports zeigen immer beide Währungen (USD + EUR), umgerechnet über den einzelnen <code>fx.usd_to_eur</code>-Kurs oben in diesem JSON.
       Änderungen werden sofort auf dem Server gespeichert (<code>/opt/llmproxy/pricing.yaml</code>), kein Deploy nötig.
     </p>
     <textarea id="cb_pricing_json" class="w-full h-56 bg-[#181825] border border-[#313244] rounded p-2 text-xs font-mono text-[#cdd6f4]" spellcheck="false"></textarea>
@@ -77,11 +79,12 @@
           <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Tokens intern (0€)</th>
           <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Tokens extern (Frontier)</th>
           <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Tokens gesamt</th>
-          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Kosten (€)</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Kosten (USD)</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Kosten (EUR)</th>
         </tr>
       </thead>
       <tbody id="cb_summary_tbody">
-        <tr><td colspan="7" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>
+        <tr><td colspan="8" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>
       </tbody>
     </table>
   </div>
@@ -99,11 +102,12 @@
           <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Prompt</th>
           <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Completion</th>
           <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Gesamt</th>
-          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Kosten (€)</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Kosten (USD)</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Kosten (EUR)</th>
         </tr>
       </thead>
       <tbody id="cb_detail_tbody">
-        <tr><td colspan="9" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>
+        <tr><td colspan="10" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>
       </tbody>
     </table>
     <div class="flex items-center justify-between p-3 border-t border-[#313244] text-sm">
@@ -191,7 +195,7 @@ function fetchChargebackTable() {
 function showUnpriced(models) {
   const banner = document.getElementById('cb_unpriced_banner');
   if (models && models.length) {
-    banner.textContent = `⚠ Keine Preisdaten für: ${models.join(', ')} (config/pricing.yaml ergänzen — Kosten werden aktuell als 0 € gezählt)`;
+    banner.textContent = `⚠ Keine Preisdaten für: ${models.join(', ')} (config/pricing.yaml ergänzen — Kosten werden aktuell als 0 gezählt)`;
     banner.classList.remove('hidden');
   } else {
     banner.classList.add('hidden');
@@ -200,7 +204,7 @@ function showUnpriced(models) {
 
 async function fetchSummary() {
   const tbody = document.getElementById('cb_summary_tbody');
-  tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>';
   const params = new URLSearchParams({ ...currentFilters(), group_by: document.getElementById('cb_group_by').value });
   try {
     const res = await fetch(`/api/admin/chargeback/summary?${params.toString()}`);
@@ -208,7 +212,7 @@ async function fetchSummary() {
     showUnpriced(data.unpriced_models);
     renderSummary(data.rows || []);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-[#f38ba8]">Fehler beim Laden: ${e}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-[#f38ba8]">Fehler beim Laden: ${e}</td></tr>`;
   }
 }
 
@@ -216,7 +220,7 @@ function renderSummary(rows) {
   const tbody = document.getElementById('cb_summary_tbody');
   tbody.innerHTML = '';
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-[#7f849c]">Keine Daten im gewählten Zeitraum.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-[#7f849c]">Keine Daten im gewählten Zeitraum.</td></tr>';
     return;
   }
   rows.forEach((r, idx) => {
@@ -231,13 +235,14 @@ function renderSummary(rows) {
       <td class="p-3 text-xs text-right text-[#7f849c]">${fmt(r.tokens_local)}</td>
       <td class="p-3 text-xs text-right text-[#fab387]">${fmt(r.tokens_frontier)}</td>
       <td class="p-3 text-xs text-right text-[#a6e3a1]">${fmt(r.total_tokens)}</td>
+      <td class="p-3 text-xs text-right text-[#f9e2af]">${(r.cost_usd || 0).toFixed(4)}</td>
       <td class="p-3 text-xs text-right text-[#f9e2af]">${(r.cost_eur || 0).toFixed(4)}</td>
     `;
     tbody.appendChild(tr);
     const detailTr = document.createElement('tr');
     detailTr.id = `cb_drill_${cssKey(rowKey)}`;
     detailTr.className = "hidden";
-    detailTr.innerHTML = `<td colspan="7" class="p-0"><div class="p-3 bg-[#11111b]"></div></td>`;
+    detailTr.innerHTML = `<td colspan="8" class="p-0"><div class="p-3 bg-[#11111b]"></div></td>`;
     tbody.appendChild(detailTr);
   });
 }
@@ -272,7 +277,8 @@ async function toggleDrilldown(rowKey, tokenName, headerTr) {
           <th class="p-2 text-[10px] text-[#7f849c] text-right">Requests</th>
           <th class="p-2 text-[10px] text-[#7f849c] text-right">Tokens intern</th>
           <th class="p-2 text-[10px] text-[#7f849c] text-right">Tokens extern</th>
-          <th class="p-2 text-[10px] text-[#7f849c] text-right">Kosten (€)</th>
+          <th class="p-2 text-[10px] text-[#7f849c] text-right">Kosten (USD)</th>
+          <th class="p-2 text-[10px] text-[#7f849c] text-right">Kosten (EUR)</th>
           <th class="p-2 text-[10px] text-[#7f849c]">Zuletzt gesehen</th>
         </tr></thead>
         <tbody>
@@ -282,6 +288,7 @@ async function toggleDrilldown(rowKey, tokenName, headerTr) {
               <td class="p-2 text-xs text-right">${fmt(ip.requests)}</td>
               <td class="p-2 text-xs text-right text-[#7f849c]">${fmt(ip.tokens_local)}</td>
               <td class="p-2 text-xs text-right text-[#fab387]">${fmt(ip.tokens_frontier)}</td>
+              <td class="p-2 text-xs text-right text-[#f9e2af]">${(ip.cost_usd || 0).toFixed(4)}</td>
               <td class="p-2 text-xs text-right text-[#f9e2af]">${(ip.cost_eur || 0).toFixed(4)}</td>
               <td class="p-2 text-xs text-[#7f849c]">${escHtml(ip.last_seen || '—')}</td>
             </tr>`).join('')}
@@ -294,7 +301,7 @@ async function toggleDrilldown(rowKey, tokenName, headerTr) {
 
 async function fetchDetail() {
   const tbody = document.getElementById('cb_detail_tbody');
-  tbody.innerHTML = '<tr><td colspan="9" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="10" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>';
   const limit = document.getElementById('cb_detail_limit').value;
   const offset = (cbDetailPage - 1) * limit;
   const params = new URLSearchParams({ ...currentFilters(), limit, offset });
@@ -306,7 +313,7 @@ async function fetchDetail() {
     renderDetail(data.rows || []);
     updateDetailPager(limit);
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="9" class="p-4 text-center text-[#f38ba8]">Fehler beim Laden: ${e}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="p-4 text-center text-[#f38ba8]">Fehler beim Laden: ${e}</td></tr>`;
   }
 }
 
@@ -314,7 +321,7 @@ function renderDetail(rows) {
   const tbody = document.getElementById('cb_detail_tbody');
   tbody.innerHTML = '';
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="p-4 text-center text-[#7f849c]">Keine Daten im gewählten Zeitraum.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="p-4 text-center text-[#7f849c]">Keine Daten im gewählten Zeitraum.</td></tr>';
     return;
   }
   rows.forEach(r => {
@@ -331,6 +338,7 @@ function renderDetail(rows) {
       <td class="p-3 text-xs text-right">${fmt(r.prompt_tokens)}</td>
       <td class="p-3 text-xs text-right">${fmt(r.completion_tokens)}</td>
       <td class="p-3 text-xs text-right text-[#a6e3a1]">${fmt(r.total_tokens)}</td>
+      <td class="p-3 text-xs text-right text-[#f9e2af]">${(r.cost_usd || 0).toFixed(4)}</td>
       <td class="p-3 text-xs text-right text-[#f9e2af]">${(r.cost_eur || 0).toFixed(4)}</td>
     `;
     tbody.appendChild(tr);

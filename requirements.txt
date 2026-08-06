@@ -6,3 +6,8 @@ pyyaml
 presidio-analyzer
 spacy
 openpyxl
+cryptography
+passlib
+bcrypt==4.0.1
+itsdangerous
+python-multipart
