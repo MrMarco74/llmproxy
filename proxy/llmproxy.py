@@ -26,13 +26,19 @@ Features:
   - Client profiler (per-IP behavioral aggregation)
   - Load shedding (GPU overload → queue or 503)
   - Idle model eviction (free VRAM when models unused)
-  - Round-Robin GPU routing for parallel inference across 2 GPUs
+  - Round-Robin GPU routing for parallel inference when 2 GPUs are present
+    (auto-detected via gpu-agent's hardware report — degrades cleanly to a
+    single upstream when only one GPU is installed, e.g. dana is currently
+    single-GPU/RTX 3080 after the RTX 3060 was removed for rack space)
   - Stop-All maintenance mode (blocks all inference, force-purges GPU)
   - GET /status/gpu — live GPU process map (model, client, VRAM, load)
   - POST /maintenance/force-purge — soft evict + SIGKILL llama-server
-  - Model-catalog-aware routing: merged /api/tags across both GPUs, and
-    /api/chat|generate only route to an upstream that actually has the model
-    (fixes vision/rare models silently 404ing on load-balanced round-robin)
+  - Model-catalog-aware routing: merged /api/tags across both configured
+    upstreams (polling a second upstream that doesn't exist just marks it
+    unreachable, handled gracefully — see _model_present/_ollama_healthy),
+    and /api/chat|generate only route to an upstream that actually has the
+    model (fixes vision/rare models silently 404ing on load-balanced
+    round-robin)
 """
 
 __version__ = "2.17.0"
@@ -139,9 +145,9 @@ _SSL_KEY          = Path("/etc/letsencrypt/live/internal.familie-frischkorn.de/p
 DEFAULT_OLLAMA_OPTIONS = {"num_gpu": -1, "num_ctx": 65536}
 
 # Per-model num_ctx overrides — DEFAULT_OLLAMA_OPTIONS is shared by every
-# model behind this proxy, including small models on the 12GB GPU1-only
-# upstream, so it must stay conservative. Larger windows are opted in here
-# per model instead of raised globally.
+# model behind this proxy, so it must stay conservative for whatever the
+# smallest/tightest-VRAM upstream is. Larger windows are opted in here per
+# model instead of raised globally.
 MODEL_NUM_CTX_OVERRIDES = {
     # Dual-GPU tensor split (24GB combined) with OLLAMA_NUM_PARALLEL=1 —
     # see docs/technical.md and doku/posts/13-app-llmproxy.md.
@@ -1203,11 +1209,18 @@ def _model_present(idx: int, model: str) -> bool:
     Solange der Katalog für diese GPU noch leer ist (z.B. direkt nach dem
     Start, bevor _poll_model_catalog() den ersten Durchlauf beendet hat),
     wird nicht blockiert - sonst würde ein kalter Start alle Requests auf
-    eine GPU zwingen, bis der erste Poll durch ist.
+    eine GPU zwingen, bis der erste Poll durch ist. Diese Kulanz gilt aber
+    nur, solange der Upstream noch nie erfolgreich geantwortet hat
+    (_ollama_healthy startet optimistisch bei True) - ist ein Upstream
+    inzwischen als dauerhaft nicht erreichbar bekannt (z.B. zweite
+    GPU/Ollama-Instanz real abgebaut, nicht nur kurzzeitig down), soll er
+    nicht mehr fälschlich als "hat jedes Modell" behandelt werden, sonst
+    landen Requests für dort nicht installierte Modelle blind auf einem
+    toten Host statt sauber auf dem Upstream, der wirklich antwortet.
     """
     catalog = _model_catalog.get(idx)
     if not catalog:
-        return True
+        return _ollama_healthy.get(idx, True)
     return model in catalog
 
 
