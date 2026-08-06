@@ -15,9 +15,9 @@ LOG_PREFIX="[mirror_to_github]"
 # ohnehin von HEAD fernhält.
 EXCLUDE_PATTERNS=(
     ".env"
-    "proxy/config/*.yaml"
-    "proxy/config/tokens.yaml"
-    "proxy/config/.admin_token"
+    "config/clients.yaml"
+    "config/tokens.yaml"
+    "config/.admin_token"
     "*.db"
     "*.db-journal"
 )
