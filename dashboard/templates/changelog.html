@@ -8,6 +8,19 @@
 
 <div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
 
+  <div class="card relative pl-10 border-l-4 border-l-[#89b4fa]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#89b4fa] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#89b4fa] text-lg">v2.14.0 &mdash; Chargeback-API &amp; Kostenverrechnung</h2>
+      <span class="text-sm text-[#7f849c]">6. August 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Neue Chargeback-API:</strong> <code>GET /admin/chargeback/{summary,drilldown,detail,export}</code> liefert Token-/Kostenaufschl&uuml;sselung pro Client (<code>token_name</code>), inkl. Drilldown auf die einzelnen Client-IPs, die f&uuml;r diesen Client angefragt haben. Gesch&uuml;tzt durch einen neuen, eigenst&auml;ndigen <code>X-Chargeback-Token</code> (getrennt vom Admin-Token, geeignet zur Weitergabe an externe BI-/Buchhaltungstools ohne Admin-Rechte).</li>
+      <li><strong>Preistabelle:</strong> Neue <code>config/pricing.yaml</code> (Modell &rarr; &euro;/1k Input-/Output-Tokens). Modelle ohne Preiseintrag z&auml;hlen als 0&euro; und werden in der API-Antwort als <code>unpriced_models</code> markiert.</li>
+      <li><strong>CSV/XLSX-Export:</strong> Neue Dashboard-Seite <code>/chargeback</code> mit Datum-/Client-Filtern, Umschalter Aggregiert/Detail, klickbarem IP-Drilldown je Client-Zeile und Export-Buttons f&uuml;r CSV sowie XLSX (per-Request-Download, kein Token im Browser).</li>
+    </ul>
+  </div>
+
   <div class="card relative pl-10 border-l-4 border-l-[#f38ba8]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f38ba8] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">
