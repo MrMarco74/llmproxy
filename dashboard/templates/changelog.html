@@ -8,6 +8,20 @@
 
 <div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
 
+  <div class="card relative pl-10 border-l-4 border-l-[#f38ba8]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f38ba8] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#f38ba8] text-lg">v2.15.0 &mdash; Login/RBAC, USD+EUR Chargeback &amp; verschl&uuml;sselte Secrets</h2>
+      <span class="text-sm text-[#7f849c]">6. August 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Dashboard-Login &amp; RBAC:</strong> Das Dashboard hat jetzt einen echten Login (Session-Cookie) statt sich rein auf die Netzwerk-Position zu verlassen. Drei Rollen: <code>admin</code> (Vollzugriff), <code>finance</code> (Chargeback lesen + Preise pflegen), <code>viewer</code> (Nur-Lese-Zugriff auf Live/Verlauf/Log/Failures). Nav-Links und Wartungs-Buttons blenden sich je nach Rolle aus; ein direkter Aufruf einer gesperrten Seite liefert 403 statt in eine Login-Schleife zu laufen.</li>
+      <li><strong>Neue Chargeback-Auswertungsseite:</strong> <code>/chargeback</code> zeigt Token-/Kostenaufschl&uuml;sselung pro Client mit IP-Drilldown, CSV/XLSX-Export und einem Editor f&uuml;r die Modellpreise &mdash; jetzt durchg&auml;ngig in <strong>USD und EUR</strong> (eigener, dokumentierter Umrechnungskurs statt fest einprogrammierter Zahl), plus Aufschl&uuml;sselung Tokens intern (lokal, 0&euro;) vs. extern (Frontier, kostenpflichtig).</li>
+      <li><strong>API-Keys &amp; RBAC-Auth:</strong> Neue <code>/admin/users</code> und <code>/admin/api_keys</code> Endpunkte ersetzen sukzessive den einen geteilten Admin-Token durch individuelle, rollenbasierte API-Keys (<code>key_id.secret</code>, gehasht gespeichert). Der alte <code>X-Admin-Token</code>/<code>X-Chargeback-Token</code> funktioniert &uuml;bergangsweise weiter.</li>
+      <li><strong>Secrets verschl&uuml;sselt statt Klartext:</strong> Client-Bearer-Tokens und Frontier-Provider-API-Keys lagen bisher im Klartext in <code>clients.yaml</code>/<code>frontier.yaml</code> (mit-committed in Git). Beide wandern jetzt in eine Fernet-verschl&uuml;sselte <code>secrets</code>-Tabelle &mdash; bestehende Client-Tokens funktionieren unver&auml;ndert weiter (keine Neuverteilung n&ouml;tig), Frontier-Keys werden im Admin-UI nur noch maskiert angezeigt.</li>
+    </ul>
+  </div>
+
   <div class="card relative pl-10 border-l-4 border-l-[#fab387]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#fab387] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">
