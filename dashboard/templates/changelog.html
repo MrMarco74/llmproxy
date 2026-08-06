@@ -8,6 +8,20 @@
 
 <div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
 
+  <div class="card relative pl-10 border-l-4 border-l-[#94e2d5]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#94e2d5] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#94e2d5] text-lg">v2.17.0 &mdash; Tests, Splunk-HEC-Export &amp; Doku-Ausbau</h2>
+      <span class="text-sm text-[#7f849c]">6. August 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Echter Splunk-Export:</strong> Neben dem lokalen <code>audit.log</code> kann jetzt zus&auml;tzlich live per HTTP Event Collector (HEC) an eine echte Splunk-Instanz gesendet werden &mdash; nicht-blockierend, TLS-Verifikation standardm&auml;&szlig;ig an. Konfigurierbar im neuen Settings-Tab &raquo;Splunk&laquo; (URL, Index, Token maskiert, Test-Connection-Button), Token liegt verschl&uuml;sselt in der <code>secrets</code>-Tabelle. Neue Endpunkte <code>GET</code>/<code>POST /admin/splunk/config</code>, <code>POST /admin/splunk/test</code>.</li>
+      <li><strong>Erste committete Testsuite:</strong> Neuer <code>tests/</code>-Ordner (83 Tests) deckt die Guardrail-Rule-Engine, RBAC-Rollenpr&uuml;fung, Chargeback-W&auml;hrungsrechnung und den neuen Splunk-Export im Proxy ab, sowie Auth-Gating und API-Passthroughs im Dashboard &mdash; l&auml;uft ohne die schweren DLP-Abh&auml;ngigkeiten (presidio/spacy) zu installieren. <code>requirements-dev.txt</code> + Anleitung in <code>CONTRIBUTING.md</code>.</li>
+      <li><strong>Doku-Ausbau:</strong> Neue <code>docs/api.md</code> (Auth-Modell, curl-Beispiele, Splunk-Event-JSON-Schema) und <code>docs/mcp.md</code> (Automation-Rolle/MCP-Server-Architektur), <code>SETUP.md</code> als Einstiegspunkt, RBAC-Rollenmatrix + neue DB-Tabellen in <code>docs/technical.md</code> erg&auml;nzt, <code>CONTRIBUTING.md</code> um Hobby-Projekt-Hinweis erg&auml;nzt.</li>
+      <li><strong>Changelog eingeklappt:</strong> Nur noch die drei neuesten Eintr&auml;ge werden standardm&auml;&szlig;ig angezeigt, &auml;ltere Versionen lassen sich per Knopfdruck ein-/ausklappen.</li>
+    </ul>
+  </div>
+
   <div class="card relative pl-10 border-l-4 border-l-[#a6e3a1]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#a6e3a1] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">
@@ -33,6 +47,12 @@
       <li><strong>Secrets verschl&uuml;sselt statt Klartext:</strong> Client-Bearer-Tokens und Frontier-Provider-API-Keys lagen bisher im Klartext in <code>clients.yaml</code>/<code>frontier.yaml</code> (mit-committed in Git). Beide wandern jetzt in eine Fernet-verschl&uuml;sselte <code>secrets</code>-Tabelle &mdash; bestehende Client-Tokens funktionieren unver&auml;ndert weiter (keine Neuverteilung n&ouml;tig), Frontier-Keys werden im Admin-UI nur noch maskiert angezeigt.</li>
     </ul>
   </div>
+
+  <div class="text-center -my-1">
+    <button id="changelog-toggle" onclick="toggleOlderChangelog()" class="text-sm text-[#89b4fa] hover:underline">Ältere Einträge anzeigen ▾</button>
+  </div>
+
+  <div id="changelog-older" class="hidden space-y-4">
 
   <div class="card relative pl-10 border-l-4 border-l-[#fab387]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#fab387] border-4 border-[#1e1e2e]"></div>
@@ -277,5 +297,18 @@
     </ul>
   </div>
 
+  </div> <!-- #changelog-older -->
+
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleOlderChangelog() {
+  const older = document.getElementById('changelog-older');
+  const btn = document.getElementById('changelog-toggle');
+  const nowHidden = older.classList.toggle('hidden');
+  btn.textContent = nowHidden ? 'Ältere Einträge anzeigen ▾' : 'Ältere Einträge ausblenden ▴';
+}
+</script>
 {% endblock %}

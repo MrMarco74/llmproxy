@@ -1,0 +1,23 @@
+# Dev/test dependencies for `pytest tests/` -- kept separate from
+# requirements.txt so these never ship to the `worker` production
+# install, and deliberately does NOT pull in requirements.txt wholesale:
+# proxy/llmproxy.py's only heavy production dependency (presidio-analyzer
+# + spacy, for DLP entity detection) is stubbed out by
+# tests/proxy/conftest.py rather than installed, so the test suite can
+# run without downloading spacy language models. If you add a test that
+# needs presidio for real, install requirements.txt separately instead of
+# expanding this file.
+pytest>=8.0.0
+respx>=0.20.0
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+httpx>=0.24.0
+websockets>=11.0
+pyyaml>=6.0
+bcrypt>=4.0.0
+cryptography>=41.0.0
+pydantic>=2.0.0
+jinja2>=3.1.0
+starlette<1.0.0
+itsdangerous>=2.1.0
+python-multipart>=0.0.6

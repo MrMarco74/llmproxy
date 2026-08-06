@@ -310,6 +310,20 @@ curl -fsSL http://{{ request.headers.get('host', '<proxy-host>:18080') }}/static
     </div>
   </div>
 
+  <!-- ── Weiterführende Dokumentation (im Repo) ───────────────────────────────── -->
+  <div class="card">
+    <div class="text-sm font-semibold text-[#cdd6f4] mb-3">📚 Weiterführende Dokumentation</div>
+    <p class="text-xs text-[#7f849c] mb-3">Im Repository unter <code class="text-[#89b4fa]">docs/</code>, Root-Level, bzw. <code class="text-[#89b4fa]">mcp_server/</code>:</p>
+    <div class="grid grid-cols-2 gap-3 text-sm">
+      <div class="flex gap-2 items-start"><span class="text-[#7f849c] shrink-0">•</span><span><code class="text-[#89b4fa]">SETUP.md</code> <span class="text-[#7f849c] text-xs">— Installation, Einstieg</span></span></div>
+      <div class="flex gap-2 items-start"><span class="text-[#7f849c] shrink-0">•</span><span><code class="text-[#89b4fa]">docs/user-guide.md</code> <span class="text-[#7f849c] text-xs">— Bedienungsanleitung (DE)</span></span></div>
+      <div class="flex gap-2 items-start"><span class="text-[#7f849c] shrink-0">•</span><span><code class="text-[#89b4fa]">docs/technical.md</code> <span class="text-[#7f849c] text-xs">— Endpoints, DB-Schema, Architektur (DE)</span></span></div>
+      <div class="flex gap-2 items-start"><span class="text-[#7f849c] shrink-0">•</span><span><code class="text-[#89b4fa]">docs/api.md</code> <span class="text-[#7f849c] text-xs">— Auth-Modell, curl-Beispiele, Splunk-Event-Schema</span></span></div>
+      <div class="flex gap-2 items-start"><span class="text-[#7f849c] shrink-0">•</span><span><code class="text-[#89b4fa]">docs/mcp.md</code> <span class="text-[#7f849c] text-xs">— MCP-Server für externe Automatisierung</span></span></div>
+      <div class="flex gap-2 items-start"><span class="text-[#7f849c] shrink-0">•</span><span><code class="text-[#89b4fa]">CONTRIBUTING.md</code> <span class="text-[#7f849c] text-xs">— Tests, Projekt-Philosophie</span></span></div>
+    </div>
+  </div>
+
 </div>
 {% endblock %}
 

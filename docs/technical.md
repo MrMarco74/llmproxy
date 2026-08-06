@@ -72,6 +72,25 @@ Client → :11435/v1/chat/completions
 
 Alle Endpoints lauschen auf `:11435`.
 
+### Authentifizierung & Rollen (RBAC)
+
+Jeder `/admin/*`-, `/admin/chargeback/*`- und `/maintenance/*`-Endpunkt verlangt
+`Authorization: Bearer <key_id>.<secret>` (API-Key aus der `api_keys`-Tabelle,
+`_authenticate()` in `llmproxy.py`) oder — als Fallback für nicht migrierte
+Alt-Clients — den geteilten `X-Admin-Token`/`X-Chargeback-Token`-Header.
+Vier Rollen:
+
+| Rolle | Zugriff |
+|---|---|
+| `admin` | Alles — inkl. `/maintenance/*` und Chargeback-Pricing. |
+| `finance` | Chargeback lesen (`summary`/`drilldown`/`detail`/`export`) + Pricing pflegen. Kein Zugriff auf Guardrails, Clients, Maintenance. |
+| `automation` | Guardrails (lesen/schreiben/simulieren), Client-Verwaltung, Fail2Ban-Bans, Request-Log, Chargeback-Lesedaten — für externe Prozesse via [MCP-Server](../mcp_server/README.md). **Kein** Zugriff auf `/maintenance/*` oder Pricing. |
+| `viewer` | Nur dashboardseitig relevant (keine `api_keys`-Rolle) — Lesezugriff auf Live/Verlauf/Log/Failures. |
+
+API-Keys werden über `POST /admin/api_keys` (admin-only) erzeugt; der
+`bearer`-Wert (`key_id.secret`) wird nur bei der Erzeugung einmal im
+Klartext zurückgegeben. Details und curl-Beispiele: [api.md](api.md).
+
 ### LLM-Proxy (mit Gaming-Guard + Budget-Guard)
 
 | Methode | Pfad | Beschreibung |
@@ -277,6 +296,64 @@ Abfragbar über `GET /admin/actions?limit=100` (Admin-Token nötig).
 | `total_requests` | INTEGER | Gesamtanzahl Requests (30 Tage) |
 | `updated_at` | TEXT | Letztes Update |
 
+### Tabelle `users`
+
+Dashboard-Login-Konten (nicht zu verwechseln mit `api_keys` für Maschinen-Zugriffe).
+
+| Spalte | Typ | Beschreibung |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `username` | TEXT UNIQUE | Login-Name |
+| `password_hash` | TEXT | bcrypt-Hash |
+| `role` | TEXT | `admin`, `finance`, oder `viewer` |
+| `created_at` / `last_login_at` | TEXT | ISO-8601 |
+| `disabled` | INTEGER | 0/1 |
+
+### Tabelle `api_keys`
+
+Maschinen-Credentials für `/admin/*`-Endpunkte (`key_id.secret`, bcrypt-gehasht).
+
+| Spalte | Typ | Beschreibung |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `key_id` | TEXT UNIQUE | Öffentlicher Teil des Bearer-Tokens |
+| `secret_hash` | TEXT | bcrypt-Hash des geheimen Teils |
+| `owner_type` | TEXT | `user` oder `service` |
+| `owner_name` | TEXT | Freitext-Label (z.B. `weekly-billing-job`) |
+| `role` | TEXT | `admin`, `finance`, oder `automation` |
+| `created_at` / `last_used_at` | TEXT | ISO-8601 |
+| `disabled` | INTEGER | 0/1 |
+
+### Tabelle `secrets`
+
+Fernet-verschlüsselter Key-Value-Store (Schlüssel liegt als `.secret_key`
+mit `0600`-Rechten in `CONFIG_DIR`, atomar per `os.O_CREAT|O_EXCL` erzeugt).
+Enthält Client-Bearer-Tokens (`client_token.<name>`, unverändert aus
+`clients.yaml` migriert), Frontier-Provider-API-Keys
+(`frontier.<provider>.api_key`) und den Splunk-HEC-Token
+(`splunk.hec_token`) — nichts davon liegt mehr im Klartext in einer
+git-getrackten YAML-Datei.
+
+| Spalte | Typ | Beschreibung |
+|---|---|---|
+| `name` | TEXT PK | Secret-Name |
+| `value_encrypted` | BLOB | Fernet-verschlüsselter Wert |
+| `updated_at` | TEXT | ISO-8601 |
+
+### Tabelle `guardrail_events`
+
+Jeder Guardrail-Treffer (`deny`/`silent`/`warn`/`redirect*`/`reduce_effort_external`),
+geschrieben von `_record_violation()`.
+
+| Spalte | Typ | Beschreibung |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `ts` | TEXT | ISO-8601 |
+| `token_name` / `client_ip` | TEXT | Auslösender Client |
+| `action` | TEXT | Ausgeführte Action |
+| `trigger` / `rule_pattern` | TEXT | Getriggerter Regeltyp + Pattern |
+| `snippet` | TEXT | Erste 200 Zeichen des Prompts |
+
 ---
 
 ## 4. Konfigurations-Referenz
@@ -376,6 +453,55 @@ events:
 Verfügbare Events: `gaming_mode_start`, `gaming_mode_end`, `budget_warning`, `budget_exceeded`, `tps_anomaly`, `thermal_warning`, `model_evicted`, `load_shedding`, `weekly_report`
 
 Notifications werden intern in der SQLite-Tabelle `notifications` gespeichert und über den SSE-Stream als `unread_count` an alle Clients übermittelt.
+
+### `guardrails.yaml`
+
+```yaml
+enabled: <bool>
+global_rules:
+  - trigger: keyword | regex | dlp | output_keyword | output_dlp
+    pattern: "<string>"          # bei keyword/regex/output_keyword
+    action: deny | silent | warn | rewrite | redirect
+            | redirect_internal | redirect_external | reduce_effort_external
+    mode: enforce | monitor | shadow   # shadow: nur loggen, nicht anwenden
+    target_model: "<model>"      # bei redirect/redirect_internal/redirect_external
+    effort_field: "<field>"      # bei reduce_effort_external, Default: reasoning_effort
+    effort_value: <any>          # bei reduce_effort_external, Default: "low"
+client_rules:
+  <token_name>:
+    rules: [ ... ]                # gleiche Struktur wie global_rules
+```
+
+Regeln werden in Reihenfolge geprüft (`global_rules` vor `client_rules`),
+mehrere Treffer in derselben Liste akkumulieren (z.B. kann eine
+vorangehende `redirect_external`-Regel das Modell wechseln, bevor eine
+nachfolgende `reduce_effort_external`-Regel es sieht — sie wertet immer
+den *aktuellen* Modellnamen aus, siehe `_apply_rules()`).
+`redirect_internal`/`redirect_external` unterscheiden sich zur Laufzeit
+nicht von `redirect` (identische Mutation von `body["model"]`) — die
+eigenen Namen existieren nur, damit das Admin-UI die passende Modellliste
+(lokal vs. Frontier) im Regel-Editor anzeigt. `reduce_effort_external`
+ist eine eigenständige Action und no-opt, wenn das aktuelle Zielmodell
+nicht über `_get_frontier_target()` auflöst (d.h. für lokale Requests).
+
+### `splunk.yaml`
+
+```yaml
+enabled: <bool>       # Default: false
+url: "<string>"       # Splunk HEC Base-URL, z.B. https://splunk.example.com:8088
+index: "<string>"     # optional
+verify_tls: <bool>    # Default: true — nur für selbstsignierte interne Zertifikate deaktivieren
+```
+
+Der HEC-Token selbst steht **nicht** in dieser Datei — er liegt
+verschlüsselt in der `secrets`-Tabelle (`splunk.hec_token`, siehe §3) und
+wird über `GET`/`POST /admin/splunk/config` verwaltet (Token wird beim
+Lesen maskiert zurückgegeben). Ist `enabled: true`, sendet jeder
+`_log_to_splunk()`-Aufruf zusätzlich zum lokalen `audit.log`-File einen
+nicht-blockierenden HTTPS-Push an `<url>/services/collector/event`
+(`asyncio.create_task`, ein Splunk-Ausfall verlangsamt also nie die
+Inference). Event-Schema und `POST /admin/splunk/test`: siehe
+[api.md](api.md#splunk-hec-export).
 
 ---
 

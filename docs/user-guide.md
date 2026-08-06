@@ -117,13 +117,22 @@ Das Dashboard läuft als Docker-Container auf <proxy-host> und ist im Browser er
 http://<proxy-host>:18080
 ```
 
+Das Dashboard verlangt einen Login (Session-Cookie, 12h gültig) — Accounts
+werden vom Admin unter **Policies → Users** angelegt. Drei Rollen: `admin`
+(Vollzugriff), `finance` (Chargeback + Preise), `viewer` (nur Lesezugriff
+auf Live/Verlauf/Log/Failures). Ein Aufruf einer gesperrten Seite mit der
+falschen Rolle liefert `403`, kein Redirect-Loop.
+
 ### Seiten
 
-| Seite | URL | Inhalt |
-|---|---|---|
-| Live | `/` | Hardware-Gauges, geladene Modelle, letzte Requests, Tokens/s-Sparkline |
-| Verlauf | `/history?days=7` | Tokens/Tag, tps per Modell, Client-Tabelle, Tool-Use, Scatter |
-| Failures | `/failures` | Letzte Fehler mit User-Message, Fehler nach Grund/Modell |
+| Seite | URL | Inhalt | Mindest-Rolle |
+|---|---|---|---|
+| Live | `/` | Hardware-Gauges, geladene Modelle, letzte Requests, Tokens/s-Sparkline | jede |
+| Verlauf | `/history?days=7` | Tokens/Tag, tps per Modell, Client-Tabelle, Tool-Use, Scatter | jede |
+| Failures | `/failures` | Letzte Fehler mit User-Message, Fehler nach Grund/Modell | jede |
+| Chargeback | `/chargeback` | Kostenaufschlüsselung (USD+EUR) mit IP-Drilldown, CSV/XLSX-Export | `admin`, `finance` |
+| Policies | `/admin` | Clients, Guardrails, Fail2Ban, Users, API-Keys | `admin` |
+| Settings | `/settings` | LLM/Log/Splunk/Homelab-Konfiguration | `admin` |
 
 ### Docker-Container starten (auf <proxy-host>)
 

@@ -5,6 +5,7 @@
 <div class="flex gap-4 mb-6 border-b border-[#313244] pb-2 overflow-x-auto">
     <button class="nav-link tab-btn active" data-target="llm-settings-panel">🤖 LLM</button>
     <button class="nav-link tab-btn" data-target="log-settings-panel">📝 Log</button>
+    <button class="nav-link tab-btn" data-target="splunk-settings-panel">🔎 Splunk</button>
     <button class="nav-link tab-btn" data-target="homelab-settings-panel">🏠 Homelab</button>
 </div>
 
@@ -108,6 +109,60 @@
     <!-- Save Log Settings -->
     <div class="mt-4 flex justify-end">
         <button onclick="saveLogSettings()" class="bg-[#a6e3a1] text-[#1e1e2e] px-6 py-2 rounded font-bold hover:bg-[#94e2d5] transition">Save Log Settings</button>
+    </div>
+</div>
+
+<!-- Splunk Settings Panel -->
+<div id="splunk-settings-panel" class="tab-content hidden space-y-4">
+    <h2 class="text-xl font-bold text-[#b4befe] mb-4">🔎 Splunk Export</h2>
+
+    <div class="card max-w-2xl">
+        <div class="flex justify-between items-center mb-3">
+            <div>
+                <h3 class="font-bold text-[#cdd6f4]">HTTP Event Collector (HEC)</h3>
+                <p class="text-sm text-[#7f849c] mt-1">
+                    Sends every event that already goes to <code class="bg-[#313244] px-1 py-0.5 rounded">audit.log</code>
+                    (guardrail hits, redirects, admin actions, ...) to a Splunk HEC endpoint over
+                    HTTPS in addition to the local file — non-blocking, so a Splunk outage never
+                    slows down inference.
+                </p>
+            </div>
+            <label class="flex items-center gap-2 cursor-pointer text-sm">
+                <input type="checkbox" id="splunk-enable" class="form-checkbox h-5 w-5 text-[#a6e3a1]">
+                Aktiv
+            </label>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+            <div>
+                <label class="block text-sm text-[#7f849c] mb-1">HEC URL</label>
+                <input type="url" id="splunk-url" class="w-full bg-[#11111b] border border-[#313244] rounded px-3 py-2 text-[#cdd6f4] font-mono text-sm focus:border-[#89b4fa] focus:outline-none" placeholder="https://splunk.internal.example.com:8088">
+            </div>
+            <div>
+                <label class="block text-sm text-[#7f849c] mb-1">Index (optional)</label>
+                <input type="text" id="splunk-index" class="w-full bg-[#11111b] border border-[#313244] rounded px-3 py-2 text-[#cdd6f4] font-mono text-sm focus:border-[#89b4fa] focus:outline-none" placeholder="llmproxy">
+            </div>
+            <div class="md:col-span-2">
+                <label class="block text-sm text-[#7f849c] mb-1">HEC Token</label>
+                <input type="password" id="splunk-token" class="w-full bg-[#11111b] border border-[#313244] rounded px-3 py-2 text-[#cdd6f4] font-mono text-sm focus:border-[#89b4fa] focus:outline-none" placeholder="stored encrypted server-side">
+            </div>
+            <div>
+                <label class="flex items-center gap-2 cursor-pointer text-sm text-[#7f849c]">
+                    <input type="checkbox" id="splunk-verify-tls" class="form-checkbox h-4 w-4 text-[#89b4fa]" checked>
+                    TLS-Zertifikat prüfen
+                </label>
+            </div>
+        </div>
+
+        <div class="flex justify-between items-center mt-5">
+            <div>
+                <button onclick="testSplunkConnection(this)" class="bg-[#f9e2af] text-[#1e1e2e] px-4 py-2 rounded text-sm font-bold hover:bg-[#f5deb3] transition">
+                    Test Connection
+                </button>
+                <span id="splunk-test-result" class="test-result text-xs ml-2 hidden"></span>
+            </div>
+            <button onclick="saveSplunkSettings()" class="bg-[#a6e3a1] text-[#1e1e2e] px-6 py-2 rounded font-bold hover:bg-[#94e2d5] transition">Save Splunk Settings</button>
+        </div>
     </div>
 </div>
 
@@ -223,6 +278,7 @@ let selectedModel = '';
 
 async function initSettings() {
     await fetchLoggingConfig();
+    await fetchSplunkConfig();
     await fetchOllamaLockStatus();
     await fetchWolConfig();
     await loadLlmModels();
@@ -334,6 +390,68 @@ async function toggleLogging(enabled) {
     } catch(e) {
         alert("Error saving logging config");
         document.getElementById('logging-enable').checked = !enabled; // revert
+    }
+}
+
+// ── Splunk HEC Export Logic ──────────────────────────────────────────────────
+async function fetchSplunkConfig() {
+    try {
+        const r = await fetch('/api/splunk');
+        const cfg = await r.json();
+        if (cfg.error) return;
+        document.getElementById('splunk-enable').checked = !!cfg.enabled;
+        document.getElementById('splunk-url').value = cfg.url || '';
+        document.getElementById('splunk-index').value = cfg.index || '';
+        document.getElementById('splunk-verify-tls').checked = cfg.verify_tls !== false;
+        // Prefilled with the mask string (not empty) so an untouched field
+        // round-trips as "unchanged" -- same convention as the frontier
+        // provider API-key field.
+        document.getElementById('splunk-token').value = cfg.token || '';
+    } catch(e) { console.error("Failed to load Splunk config", e); }
+}
+
+async function saveSplunkSettings() {
+    const cfg = {
+        enabled: document.getElementById('splunk-enable').checked,
+        url: document.getElementById('splunk-url').value.trim(),
+        index: document.getElementById('splunk-index').value.trim(),
+        verify_tls: document.getElementById('splunk-verify-tls').checked,
+        token: document.getElementById('splunk-token').value,
+    };
+    try {
+        const r = await fetch('/api/splunk', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(cfg)
+        });
+        const data = await r.json();
+        if (data.error) { alert('Failed to save Splunk settings: ' + data.error); return; }
+        document.getElementById('splunk-token').value = data.token || '';
+        alert('Splunk settings saved!');
+    } catch(e) { alert('Network error saving Splunk settings'); }
+}
+
+async function testSplunkConnection(btn) {
+    const resultEl = document.getElementById('splunk-test-result');
+    resultEl.classList.remove('hidden');
+    resultEl.className = 'test-result text-xs ml-2 text-[#7f849c]';
+    resultEl.textContent = 'Testing...';
+    btn.disabled = true;
+    try {
+        const r = await fetch('/api/splunk/test', {method: 'POST'});
+        const data = await r.json();
+        if (data.ok) {
+            resultEl.className = 'test-result text-xs ml-2 text-[#a6e3a1]';
+            resultEl.textContent = 'Success!';
+        } else {
+            resultEl.className = 'test-result text-xs ml-2 text-[#f38ba8]';
+            resultEl.textContent = 'Error: ' + (data.detail || data.error || '?');
+        }
+    } catch(e) {
+        resultEl.className = 'test-result text-xs ml-2 text-[#f38ba8]';
+        resultEl.textContent = 'Network Error';
+    } finally {
+        btn.disabled = false;
     }
 }
 

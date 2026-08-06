@@ -6,6 +6,8 @@
 
 A logging and management proxy for Ollama + ComfyUI. It runs as a systemd service on a proxy host, forwards requests over the network to a dedicated GPU host, and enriches them with statistics, smart features, and observability.
 
+See [SETUP.md](SETUP.md) for installation, or jump straight to the [Quickstart](#quickstart) below.
+
 **Why separate from the GPU host?** This allows the Dashboard, Logging, and Stats to be available 24/7 without requiring the power-hungry GPU host to be running continuously. Hardware and "Gaming Mode" data (GPU load, Steam status) are delivered via a lightweight HTTP agent (`gpu-agent`) running on the GPU host.
 
 The GPU host's address is configurable via the `LLMPROXY_GPU_HOST` environment variable (default: `gpu-host`) — set it to your GPU machine's hostname or IP, e.g. via a systemd unit override or `/etc/hosts` entry.
@@ -52,7 +54,11 @@ Client Machines (any number)
 | **Model Fingerprinting** | Baseline-tps per model, anomaly detection if performance drops by > 50% |
 | **Auto-Router** | Reroutes simple requests to smaller models (`routing.yaml`) |
 | **Idle Eviction** | Unloads inactive models from VRAM after a configured threshold (`eviction.yaml`) |
-| **Chargeback API** | Cost/usage reporting per client with IP-level drilldown and CSV/XLSX export, protected by a dedicated read-only token (`pricing.yaml`) |
+| **Chargeback API** | Cost/usage reporting per client (USD + EUR) with IP-level drilldown and CSV/XLSX export (`pricing.yaml`) |
+| **Guardrails** | DLP/abuse rule engine: deny/warn/rewrite, redirect to a local or frontier model, or reduce reasoning effort on external requests (`guardrails.yaml`) |
+| **RBAC** | Per-identity API keys (`admin`/`finance`/`automation` roles) replace shared tokens; dashboard login adds a `viewer` role |
+| **MCP Server** | Scoped external automation access (`mcp_server/`) — guardrails/clients/bans/chargeback reads, no maintenance or pricing control |
+| **Splunk Export** | Optional real-time HTTP Event Collector push of every audit event, alongside the local `audit.log` file (`splunk.yaml`) |
 
 ## Quickstart
 
@@ -109,6 +115,21 @@ Default config files live in `config/` in this repo. `install.sh` copies them to
 - `eviction.yaml` — VRAM idle eviction configuration.
 - `notifications.yaml` — Notification events configuration.
 - `pricing.yaml` — €/1k-token pricing per model, used by the chargeback API (`/admin/chargeback/*`) to cost out frontier-LLM usage. Local Ollama models and any model without a price entry are counted as 0€ (surfaced as `unpriced_models` in API responses).
+- `guardrails.yaml` — DLP/abuse rules (deny/redirect/reduce-effort/...) evaluated per request; see [docs/technical.md](docs/technical.md#guardrailsyaml).
+- `splunk.yaml` — optional Splunk HTTP Event Collector export config (URL/index/TLS — the token itself lives encrypted in the DB, not here); see [docs/api.md](docs/api.md#splunk-hec-export).
+
+Client bearer tokens and frontier provider API keys are **not** stored in
+these YAML files — they live Fernet-encrypted in the `secrets` DB table
+(see [docs/technical.md §3](docs/technical.md#3-datenbank-schema)).
+
+## Access control (RBAC)
+
+`/admin/*` endpoints require a per-identity API key (`admin`/`finance`/`automation`
+roles) or the legacy shared admin/chargeback token. See
+[docs/api.md](docs/api.md) for the auth model and curl examples, and
+[docs/mcp.md](docs/mcp.md) / [mcp_server/](mcp_server/) for giving an
+external automated process (DLP pipeline, cost-control script, AI agent)
+scoped access without a full admin credential.
 
 ## Project Structure
 
@@ -120,10 +141,16 @@ llmproxy/
 ├── config/          Default YAML configs, copied to /opt/llmproxy/ on install
 ├── scripts/         Install/deploy/maintenance shell scripts
 ├── dashboard/       FastAPI + Docker live dashboard
-└── docs/            User guide & technical reference (German)
+├── mcp_server/      MCP server for external automation (scoped `automation` role)
+├── tests/           pytest suite for proxy/ and dashboard/
+└── docs/            User guide, technical reference (German), API & MCP docs (English)
 ```
 
 ## Documentation
 
+- [Setup](SETUP.md) — where to start
 - [User Guide](docs/user-guide.md) — Installation, Configuration, FAQ (German)
-- [Technical Reference](docs/technical.md) — Endpoints, DB Schema, Architecture (German)
+- [Technical Reference](docs/technical.md) — Endpoints, DB Schema, Architecture, RBAC, Config Reference (German)
+- [API Reference](docs/api.md) — Auth model, curl examples, Splunk HEC event schema
+- [MCP Server](docs/mcp.md) — external automation access (`automation` role)
+- [Contributing](CONTRIBUTING.md) — running tests, project philosophy

@@ -91,6 +91,17 @@ def _log_to_splunk(event_type: str, data: dict):
     except Exception as e:
         logger.error(f"[splunk] log error: {e}")
 
+    # Real network push to a Splunk HTTP Event Collector, additive to the
+    # file write above -- forward-referenced globals (_splunk_cfg,
+    # _get_splunk_hec_token, _push_to_splunk_hec) are defined later in
+    # this module but resolved at call time, not here, same pattern as
+    # _apply_rules calling _get_frontier_target.
+    if _splunk_cfg.get("enabled", False):
+        try:
+            asyncio.get_running_loop().create_task(_push_to_splunk_hec(payload))
+        except RuntimeError:
+            pass  # no running event loop -- e.g. called outside a request
+
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -108,8 +119,10 @@ COMFYUI_HOST      = GPU_HOST
 COMFYUI_PORT      = 18189
 GPU_AGENT_URL     = f"http://{GPU_HOST}:11436"
 
-DB_PATH           = Path("/var/lib/llmproxy/llmproxy.db")
-CONFIG_DIR        = Path("/opt/llmproxy")
+# Overridable via env var so the test suite (tests/proxy/) can point this
+# module at an isolated tmp dir instead of the real production paths.
+DB_PATH           = Path(os.environ.get("LLMPROXY_DB_PATH", "/var/lib/llmproxy/llmproxy.db"))
+CONFIG_DIR        = Path(os.environ.get("LLMPROXY_CONFIG_DIR", "/opt/llmproxy"))
 
 # Default für Guardrail-Regeln mit action=redirect, die kein eigenes
 # target_model gesetzt haben (z.B. ältere Regeln aus der Zeit, bevor die UI
@@ -188,6 +201,12 @@ _routing_cfg      = _load_yaml("routing.yaml",        {"routes": []})
 _eviction_cfg     = _load_yaml("eviction.yaml",        {"eviction_timeout_min": 15, "vram_threshold_pct": 80, "never_evict": []})
 _notify_cfg       = _load_yaml("notifications.yaml",  {"events": {}})
 _logging_cfg      = _load_yaml("logging.yaml",        {"enabled": True})
+# Real network push to Splunk via HTTP Event Collector, in addition to
+# (not instead of) the local audit.log file written by _log_to_splunk
+# above. The HEC token itself is never kept in this YAML file -- it's
+# stored in the encrypted `secrets` table like frontier provider API
+# keys, see _get_splunk_hec_token() near the admin endpoints below.
+_splunk_cfg       = _load_yaml("splunk.yaml",         {"enabled": False, "url": "", "index": "", "verify_tls": True})
 _fallback_cfg     = _load_yaml("fallback.yaml",        {"enabled": False, "mapping": {}})
 _audit_cfg        = _load_yaml("audit.yaml",           {"enabled": True, "model": "qwen3:8b", "upstream": 0,
                                                           "max_requests": 300, "max_chars_per_text": 600})
@@ -1361,7 +1380,18 @@ def _gpu_overloaded() -> bool:
 
 # ── FastAPI app + clients ──────────────────────────────────────────────────────
 
-app = FastAPI(title="llmproxy", version=__version__)
+# Purely cosmetic (groups + orders /docs) -- doesn't affect routing. Only
+# externally-facing groups get a description here; internal/inference
+# routes stay untagged rather than retrofitting all ~100 routes at once.
+_OPENAPI_TAGS = [
+    {"name": "Guardrails", "description": "DLP/abuse rule engine: config, simulation, redirect/effort actions."},
+    {"name": "Clients", "description": "Per-client budgets, model allowlists, and block/ban state."},
+    {"name": "Chargeback", "description": "Cost/usage reporting (USD+EUR) with client and IP-level drilldown."},
+    {"name": "RBAC", "description": "Users, API keys, and auth verification for the admin/finance/automation roles."},
+    {"name": "Splunk", "description": "Real-time export of audit events to a Splunk HTTP Event Collector."},
+]
+
+app = FastAPI(title="llmproxy", version=__version__, openapi_tags=_OPENAPI_TAGS)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2511,12 +2541,12 @@ async def get_logging_config(request: Request):
     return {"enabled": _logging_cfg.get("enabled", True)}
 
 
-@app.get("/admin/clients")
+@app.get("/admin/clients", tags=["Clients"])
 async def get_clients_config(request: Request):
     _check_automation(request)
     return _client_cfg
 
-@app.post("/admin/clients")
+@app.post("/admin/clients", tags=["Clients"])
 async def set_clients_config(request: Request):
     _check_automation(request)
     global _client_cfg
@@ -2619,6 +2649,56 @@ async def fetch_frontier_models(provider: str, request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+@app.get("/admin/splunk/config", tags=["Splunk"], summary="Get Splunk HEC export config")
+async def get_splunk_config(request: Request):
+    """Token is never returned decrypted -- same masking convention as
+    /admin/frontier (_FRONTIER_KEY_MASK)."""
+    _check_admin(request)
+    out = dict(_splunk_cfg)
+    out["token"] = _FRONTIER_KEY_MASK if _get_splunk_hec_token() else ""
+    return out
+
+@app.post("/admin/splunk/config", tags=["Splunk"], summary="Update Splunk HEC export config")
+async def set_splunk_config(request: Request):
+    """Scope: admin-only, not automation -- this is operational config
+    (where audit events get shipped), not DLP/abuse regulation."""
+    _check_admin(request)
+    global _splunk_cfg
+    try:
+        data = await request.json()
+        incoming_token = data.pop("token", "")
+        if incoming_token == _FRONTIER_KEY_MASK:
+            pass  # unchanged -- leave whatever's already in secrets
+        elif not incoming_token:
+            _delete_secret("splunk.hec_token")
+        else:
+            _set_secret("splunk.hec_token", incoming_token)
+        _splunk_cfg = {
+            "enabled": bool(data.get("enabled", False)),
+            "url": data.get("url", ""),
+            "index": data.get("index", ""),
+            "verify_tls": bool(data.get("verify_tls", True)),
+        }
+        with open(CONFIG_DIR / "splunk.yaml", "w") as f:
+            yaml.safe_dump(_splunk_cfg, f)
+        return await get_splunk_config(request)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/admin/splunk/test", tags=["Splunk"], summary="Send one test event to Splunk HEC")
+async def test_splunk_hec(request: Request):
+    """Uses the REAL stored token server-side (see /admin/frontier/test/{provider}
+    for the same masked-secret-field reasoning) -- sends one real test event
+    so a misconfigured URL/token/index is caught before relying on it."""
+    _check_admin(request)
+    ok, detail = await _push_to_splunk_hec({
+        "timestamp": datetime.datetime.now().isoformat(),
+        "event_type": "splunk_test",
+        "app": "llmproxy",
+        "message": "Test event from llmproxy /admin/splunk/test",
+    })
+    return {"ok": ok, "detail": detail}
+
 @app.get("/admin/secrets")
 async def list_secrets(request: Request):
     """Names + whether each is configured -- never the decrypted value."""
@@ -2691,7 +2771,7 @@ async def set_llm_config(request: Request):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/admin/guardrails")
+@app.get("/admin/guardrails", tags=["Guardrails"])
 async def get_guardrails_config(request: Request):
     _check_automation(request)
     # Migrate legacy flat structure on-the-fly
@@ -2701,7 +2781,7 @@ async def get_guardrails_config(request: Request):
         cfg.setdefault("client_rules", {})
     return cfg
 
-@app.post("/admin/guardrails")
+@app.post("/admin/guardrails", tags=["Guardrails"])
 async def set_guardrails_config(request: Request):
     _check_automation(request)
     global _guardrails_cfg
@@ -2719,7 +2799,7 @@ async def set_guardrails_config(request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-@app.post("/admin/guardrails/simulate")
+@app.post("/admin/guardrails/simulate", tags=["Guardrails"])
 async def simulate_guardrails(request: Request):
     _check_automation(request)
     try:
@@ -2748,7 +2828,7 @@ async def simulate_guardrails(request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-@app.post("/admin/guardrails/simulate-batch")
+@app.post("/admin/guardrails/simulate-batch", tags=["Guardrails"])
 async def simulate_guardrails_batch(request: Request):
     _check_automation(request)
     try:
@@ -2981,7 +3061,7 @@ def _chargeback_summary_rows(token_name: str, date_from: str, date_to: str, grou
     rows.sort(key=lambda r: r.get("date", ""), reverse=True)
     return rows, sorted(unpriced)
 
-@app.get("/admin/chargeback/summary")
+@app.get("/admin/chargeback/summary", tags=["Chargeback"])
 async def chargeback_summary(request: Request, token_name: str = "",
                               date_from: str = "", date_to: str = "",
                               group_by: str = "day"):
@@ -3033,7 +3113,7 @@ def _chargeback_drilldown_rows(token_name: str, date_from: str, date_to: str):
         row["cost_eur"] = round(row["cost_eur"], 6)
     return rows, sorted(unpriced)
 
-@app.get("/admin/chargeback/drilldown")
+@app.get("/admin/chargeback/drilldown", tags=["Chargeback"])
 async def chargeback_drilldown(request: Request, token_name: str = "",
                                 date_from: str = "", date_to: str = ""):
     _authenticate(request, {"admin", "finance", "automation"})
@@ -3082,7 +3162,7 @@ def _chargeback_detail_rows(token_name: str, client_ip: str, model: str,
             unpriced.add(row["model"])
     return total, rows, sorted(unpriced)
 
-@app.get("/admin/chargeback/detail")
+@app.get("/admin/chargeback/detail", tags=["Chargeback"])
 async def chargeback_detail(request: Request, token_name: str = "", client_ip: str = "",
                              model: str = "", date_from: str = "", date_to: str = "",
                              limit: int = 50, offset: int = 0):
@@ -3093,12 +3173,12 @@ async def chargeback_detail(request: Request, token_name: str = "", client_ip: s
     return {"total": total, "rows": rows, "fx": _pricing_cfg.get("fx", {}),
             "unpriced_models": unpriced}
 
-@app.get("/admin/chargeback/pricing")
+@app.get("/admin/chargeback/pricing", tags=["Chargeback"])
 async def get_chargeback_pricing(request: Request):
     _check_chargeback(request)
     return _pricing_cfg
 
-@app.post("/admin/chargeback/pricing")
+@app.post("/admin/chargeback/pricing", tags=["Chargeback"])
 async def set_chargeback_pricing(request: Request):
     # finance role is explicitly allowed to edit pricing (per the RBAC role
     # design: "finance = read chargeback + edit pricing") -- unlike every
@@ -3119,7 +3199,7 @@ async def set_chargeback_pricing(request: Request):
 
 _CHARGEBACK_EXPORT_ROW_CAP = 5000  # homelab-scale safety cap on detail exports
 
-@app.get("/admin/chargeback/export")
+@app.get("/admin/chargeback/export", tags=["Chargeback"])
 async def chargeback_export(request: Request, view: str = "summary", format: str = "csv",
                              token_name: str = "", client_ip: str = "", model: str = "",
                              date_from: str = "", date_to: str = "", group_by: str = "day"):
@@ -3188,7 +3268,7 @@ async def chargeback_export(request: Request, view: str = "summary", format: str
 # /admin/auth/verify is unauthenticated by design (it's the login endpoint)
 # -- same network-trust posture as every other /admin/* route today (LAN
 # reachability, no rate limiting), not a new exposure.
-@app.post("/admin/auth/verify")
+@app.post("/admin/auth/verify", tags=["RBAC"])
 async def auth_verify(request: Request):
     data = await request.json()
     username = (data.get("username") or "").strip()
@@ -3205,14 +3285,14 @@ async def auth_verify(request: Request):
 
 _ROLES = ("admin", "finance", "viewer")
 
-@app.get("/admin/users")
+@app.get("/admin/users", tags=["RBAC"])
 async def list_users(request: Request):
     _check_admin(request)
     cols = ["id", "username", "role", "created_at", "last_login_at", "disabled"]
     rows = _db().execute(f"SELECT {', '.join(cols)} FROM users ORDER BY username").fetchall()
     return {"users": [dict(zip(cols, r)) for r in rows]}
 
-@app.post("/admin/users")
+@app.post("/admin/users", tags=["RBAC"])
 async def create_user(request: Request):
     _check_admin(request)
     data = await request.json()
@@ -3232,7 +3312,7 @@ async def create_user(request: Request):
         raise HTTPException(status_code=409, detail="username already exists")
     return {"ok": True, "username": username, "role": role}
 
-@app.post("/admin/users/{username}")
+@app.post("/admin/users/{username}", tags=["RBAC"])
 async def update_user(username: str, request: Request):
     """Change role/password and/or enable/disable an existing user."""
     _check_admin(request)
@@ -3263,14 +3343,14 @@ async def delete_user(username: str, request: Request):
     _db().commit()
     return {"ok": True}
 
-@app.get("/admin/api_keys")
+@app.get("/admin/api_keys", tags=["RBAC"])
 async def list_api_keys(request: Request):
     _check_admin(request)
     cols = ["key_id", "owner_type", "owner_name", "role", "created_at", "last_used_at", "disabled"]
     rows = _db().execute(f"SELECT {', '.join(cols)} FROM api_keys ORDER BY owner_name").fetchall()
     return {"api_keys": [dict(zip(cols, r)) for r in rows]}
 
-@app.post("/admin/api_keys")
+@app.post("/admin/api_keys", tags=["RBAC"])
 async def create_api_key(request: Request):
     """Returns the plaintext secret once -- it is never recoverable again
     (only the bcrypt hash is stored), same one-time-reveal convention as
@@ -3295,7 +3375,7 @@ async def create_api_key(request: Request):
     return {"ok": True, "key_id": key_id, "bearer": f"{key_id}.{secret}",
             "note": "This secret is shown once and cannot be recovered — store it now."}
 
-@app.delete("/admin/api_keys/{key_id}")
+@app.delete("/admin/api_keys/{key_id}", tags=["RBAC"])
 async def revoke_api_key(key_id: str, request: Request):
     _check_admin(request)
     _db().execute("UPDATE api_keys SET disabled = 1 WHERE key_id = ?", (key_id,))
@@ -3401,7 +3481,7 @@ Antworte auf Deutsch, in Stichpunkten pro Abschnitt.
     return {"ok": True, "report": report, "sample_size": n, "total_matching": len(rows),
             "model": model, "est_prompt_tokens": est_tokens}
 
-@app.get("/admin/bans")
+@app.get("/admin/bans", tags=["Guardrails"])
 async def get_bans(request: Request):
     _check_automation(request)
     import time
@@ -3409,7 +3489,7 @@ async def get_bans(request: Request):
     active_bans = {k: v for k, v in _fail2ban_cfg.get("bans", {}).items() if v > now}
     return {"bans": active_bans}
 
-@app.post("/admin/unban")
+@app.post("/admin/unban", tags=["Guardrails"])
 async def unban_token(request: Request, token_name: str):
     _check_automation(request)
     if token_name in _fail2ban_cfg.get("bans", {}):
@@ -4013,7 +4093,7 @@ async def run_proxies():
 # ── Admin control endpoints ────────────────────────────────────────────────────
 
 def _load_or_create_admin_token() -> str:
-    p = Path("/opt/llmproxy/.admin_token")
+    p = CONFIG_DIR / ".admin_token"
     if p.exists():
         return p.read_text().strip()
     tok = secrets.token_urlsafe(32)
@@ -4025,7 +4105,7 @@ def _load_or_create_admin_token() -> str:
 _ADMIN_TOKEN = _load_or_create_admin_token()
 
 def _load_or_create_chargeback_token() -> str:
-    p = Path("/opt/llmproxy/.chargeback_token")
+    p = CONFIG_DIR / ".chargeback_token"
     if p.exists():
         return p.read_text().strip()
     tok = secrets.token_urlsafe(32)
@@ -4045,7 +4125,7 @@ def _load_or_create_dashboard_session_secret() -> str:
     generate-once-and-persist pattern as .admin_token; plumbed into the
     dashboard container's .env by the app_llmproxy Ansible role alongside
     LLMPROXY_ADMIN_TOKEN."""
-    p = Path("/opt/llmproxy/.dashboard_session_secret")
+    p = CONFIG_DIR / ".dashboard_session_secret"
     if p.exists():
         return p.read_text().strip()
     tok = secrets.token_urlsafe(32)
@@ -4060,7 +4140,7 @@ def _load_or_create_secret_key() -> bytes:
     """Fernet key protecting the `secrets` table at rest (client bearer
     tokens preserved-not-rotated, frontier provider api_keys) -- same
     generate-once-and-persist pattern as the admin/chargeback tokens."""
-    p = Path("/opt/llmproxy/.secret_key")
+    p = CONFIG_DIR / ".secret_key"
     if p.exists():
         return p.read_bytes().strip()
     key = Fernet.generate_key()
@@ -4102,6 +4182,38 @@ def _delete_secret(name: str):
     con = _db()
     con.execute("DELETE FROM secrets WHERE name = ?", (name,))
     con.commit()
+
+# ── Splunk HEC export ────────────────────────────────────────────────────────
+# Real network push, additive to the local audit.log file _log_to_splunk
+# always writes (see top of file). Token lives in the encrypted `secrets`
+# table, same treatment as frontier provider api_keys above.
+
+def _get_splunk_hec_token() -> str:
+    return _get_secret("splunk.hec_token") or ""
+
+async def _push_to_splunk_hec(payload: dict) -> tuple[bool, str]:
+    """Fire-and-forget from _log_to_splunk (return value ignored there);
+    also called synchronously (awaited directly) by the /admin/splunk/test
+    endpoint below, which does care about the result."""
+    url = (_splunk_cfg.get("url") or "").rstrip("/")
+    token = _get_splunk_hec_token()
+    if not url or not token:
+        return False, "Splunk HEC URL or token not configured"
+    event = {"event": payload, "sourcetype": "_json"}
+    if _splunk_cfg.get("index"):
+        event["index"] = _splunk_cfg["index"]
+    try:
+        # verify_tls defaults to True (real cert validation); only meant to
+        # be flipped off for a Splunk HEC endpoint on a self-signed
+        # internal cert, same tradeoff as any other internal-only service.
+        async with httpx.AsyncClient(timeout=5.0, verify=_splunk_cfg.get("verify_tls", True)) as client:
+            r = await client.post(f"{url}/services/collector/event", json=event,
+                                   headers={"Authorization": f"Splunk {token}"})
+            r.raise_for_status()
+            return True, "ok"
+    except Exception as e:
+        logger.error(f"[splunk-hec] push failed: {e}")
+        return False, str(e)
 
 _secret_token_map: dict[str, str] = {}
 

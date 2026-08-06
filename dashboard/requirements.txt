@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+httpx
+jinja2
+python-multipart
+starlette<1.0.0
+itsdangerous

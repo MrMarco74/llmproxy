@@ -62,7 +62,7 @@ _ADMIN_ONLY_PREFIXES = (
     "/api/admin/guardrails", "/api/admin/bans", "/api/admin/unban", "/api/admin/actions",
     "/api/admin/models", "/api/admin/wol_config", "/api/admin/ping_test", "/api/admin/test_ollama",
     "/api/admin/llm_config", "/api/admin/test_frontier", "/api/admin/fetch_models",
-    "/api/logging", "/api/cleanup", "/api/purge-vram",
+    "/api/logging", "/api/splunk", "/api/cleanup", "/api/purge-vram",
     "/api/proxy/maintenance", "/api/proxy/gaming_override",
 )
 
@@ -933,6 +933,34 @@ async def set_logging_config(request: Request):
         data = await request.json()
         async with httpx.AsyncClient(timeout=3.0, headers=_ADMIN_HEADERS) as client:
             r = await client.post(f"{PROXY_URL}/maintenance/logging", json={"enabled": bool(data.get("enabled", True))})
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/splunk")
+async def get_splunk_config():
+    try:
+        async with httpx.AsyncClient(timeout=3.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/splunk/config")
+            return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/splunk")
+async def set_splunk_config(request: Request):
+    try:
+        data = await request.json()
+        async with httpx.AsyncClient(timeout=3.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/splunk/config", json=data)
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/splunk/test")
+async def test_splunk_config():
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/splunk/test")
             return r.json()
     except Exception as e:
         return {"ok": False, "error": str(e)}

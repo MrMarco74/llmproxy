@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir "fastapi" "uvicorn[standard]" httpx "jinja2" python-multipart "starlette<1.0.0" itsdangerous
+COPY dashboard/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Download JS/CSS libraries so the dashboard works fully offline
 RUN apt-get update -qq && apt-get install -y -qq curl && rm -rf /var/lib/apt/lists/*
