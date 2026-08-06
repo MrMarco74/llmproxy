@@ -69,10 +69,10 @@
   <a href="/audit"   class="nav-link {% if '/audit' in request.url.path %}active{% endif %}">Audit</a>
   <a href="/chargeback" class="nav-link {% if '/chargeback' in request.url.path %}active{% endif %}">Chargeback</a>
   <a href="/inference" class="nav-link {% if '/inference' in request.url.path %}active{% endif %}">Inference</a>
-  <a href="/changelog" class="nav-link {% if '/changelog' in request.url.path %}active{% endif %}">Updates</a>
   <a href="/admin"   class="nav-link {% if '/admin' in request.url.path %}active{% endif %}" style="border-right:1px solid #313244;padding-right:18px">Policies</a>
   <a href="/settings" class="nav-link {% if '/settings' in request.url.path %}active{% endif %}">Settings</a>
-  <a href="/setup"    class="nav-link {% if '/setup' in request.url.path %}active{% endif %}" style="border-left:1px solid #313244;padding-left:18px">Documentation</a>
+  <a href="/setup"    class="nav-link {% if '/setup' in request.url.path %}active{% endif %}">Documentation</a>
+  <a href="/changelog" class="nav-link {% if '/changelog' in request.url.path %}active{% endif %}" style="border-left:1px solid #313244;padding-left:18px">Updates</a>
   <span class="ml-auto flex items-center gap-3">
     <span class="text-xs text-[#585b70]" id="last-update">—</span>
     <button id="stop-all-btn" title="Stop All / Resume" onclick="toggleStopAll()"
