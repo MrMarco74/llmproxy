@@ -8,6 +8,18 @@
 
 <div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
 
+  <div class="card relative pl-10 border-l-4 border-l-[#a6e3a1]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#a6e3a1] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#a6e3a1] text-lg">v2.16.0 &mdash; Guardrail-Redirects, Effort-Reduktion &amp; Automation-MCP-Server</h2>
+      <span class="text-sm text-[#7f849c]">6. August 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Neue Guardrail-Actions:</strong> Neben Deny/Silent/Warn/Rewrite/Redirect gibt es jetzt <code>redirect_internal</code> (gezielt zu einem lokalen Modell), <code>redirect_external</code> (gezielt zu einem Frontier-Modell) und <code>reduce_effort_external</code> (reduziert z.B. <code>reasoning_effort</code> auf externen Requests, konfigurierbares Feld/Wert) &mdash; im Admin-UI unter Safeguards mit passendem Modell-Picker bzw. Effort-Feldern editierbar.</li>
+      <li><strong>Automation-Rolle &amp; MCP-Server:</strong> Neue, bewusst enge <code>automation</code>-Rolle (API-Keys) f&uuml;r externe Prozesse &mdash; Zugriff auf Guardrails (lesen/schreiben/simulieren), Client-Verwaltung, Fail2Ban-Bans, Log und Chargeback-Lesedaten, aber explizit <strong>kein</strong> Zugriff auf Wartungsaktionen (Stop-All, Reboot, Evict) oder Preispflege. Neues <code>mcp_server/llmproxy_mcp/</code>-Package (analog zu labcontrol) macht diese API als MCP-Tools f&uuml;r externe Automatisierung (DLP, Missbrauchserkennung, Kostenkontrolle) nutzbar.</li>
+    </ul>
+  </div>
+
   <div class="card relative pl-10 border-l-4 border-l-[#f38ba8]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#f38ba8] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">
