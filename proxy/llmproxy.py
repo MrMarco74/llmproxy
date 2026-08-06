@@ -725,7 +725,7 @@ def _log_admin_action(action: str, source: str, client_ip: str = "", token_name:
     now = datetime.datetime.now().isoformat(timespec="seconds")
     try:
         _db().execute(
-            "INSERT INTO admin_actions (ts, action, source, client_ip, token_name, detail) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO admin_actions (ts, action, source, client_ip, token_name, detail) VALUES (?, ?, ?, ?, ?, ?)",
             [now, action, source, client_ip, token_name, detail]
         )
         _db().commit()
@@ -3806,7 +3806,7 @@ def _save_ollama_lock():
         yaml.safe_dump({"locked": _ollama_locked}, f)
 
 
-async def _set_ollama_lock(locked: bool, auto: bool, reason: str, client_ip: str = "") -> dict:
+async def _set_ollama_lock(locked: bool, auto: bool, reason: str, client_ip: str = "", token_name: str = "") -> dict:
     """Shared core for manual (/maintenance/ollama-lock|-unlock, admin-checked) and
     automatic (ComfyUI-queue poller, no auth needed - it's an internal call, not
     an HTTP request) toggling. `auto=True` marks a lock the poller itself set, so
@@ -3821,11 +3821,11 @@ async def _set_ollama_lock(locked: bool, auto: bool, reason: str, client_ip: str
         evicted = await _evict_loaded_models("ollama-lock")
         logger.info(f"[ollama-lock] aktiv ({reason}) — evicted={evicted}")
         await _notify("ollama_lock", "🔒 Ollama-Lock aktiviert", f"{reason}\nEvicted: {evicted}")
-        _log_admin_action("ollama-lock", source, client_ip, f"{reason} evicted={evicted}")
+        _log_admin_action("ollama-lock", source, client_ip, token_name, f"{reason} evicted={evicted}")
         return {"ok": True, "ollama_locked": True, "evicted": evicted}
     logger.info(f"[ollama-lock] deaktiviert ({reason})")
     await _notify("ollama_unlock", "🔓 Ollama-Lock aufgehoben", reason)
-    _log_admin_action("ollama-unlock", source, client_ip, reason)
+    _log_admin_action("ollama-unlock", source, client_ip, token_name, reason)
     return {"ok": True, "ollama_locked": False}
 
 

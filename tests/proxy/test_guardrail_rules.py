@@ -210,21 +210,3 @@ def test_no_rules_match_passes_through_unchanged(llmproxy_module):
     assert action == "pass"
     assert modified is False
     assert new_body == body
-
-
-@pytest.fixture
-def frontier_model(llmproxy_module):
-    """Registers a fake enabled frontier provider/model on the shared
-    module so _get_frontier_target(...) resolves it, then restores the
-    original config -- these globals are shared across the whole test
-    session via the session-scoped llmproxy_module fixture."""
-    llmproxy = llmproxy_module
-    original = llmproxy._frontier_cfg
-    llmproxy._frontier_cfg = {
-        "enabled": True,
-        "providers": {"testprovider": {"base_url": "https://frontier.test", "models": ["gpt-test-external"]}},
-    }
-    try:
-        yield "gpt-test-external"
-    finally:
-        llmproxy._frontier_cfg = original

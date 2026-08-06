@@ -61,7 +61,8 @@ def _init_db(db_path: Path):
             prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0,
             total_tokens INTEGER DEFAULT 0, token_name TEXT, client_ip TEXT,
             status_code INTEGER DEFAULT 200, is_frontier INTEGER DEFAULT 0,
-            prompt_text TEXT, response_text TEXT
+            prompt_text TEXT, response_text TEXT, endpoint TEXT,
+            duration_s REAL, gaming_blocked INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS budgets (
             token_name TEXT, date TEXT, tokens_used INTEGER DEFAULT 0,
@@ -72,6 +73,15 @@ def _init_db(db_path: Path):
         CREATE TABLE IF NOT EXISTS notifications (
             id INTEGER PRIMARY KEY, ts TEXT, event TEXT, title TEXT,
             message TEXT, priority TEXT, read_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS failures (
+            id INTEGER PRIMARY KEY, ts TEXT, model TEXT, token_name TEXT,
+            client_ip TEXT, endpoint TEXT, status_code INTEGER,
+            failure_reason TEXT, last_user_message TEXT
+        );
+        CREATE TABLE IF NOT EXISTS admin_actions (
+            id INTEGER PRIMARY KEY, ts TEXT, action TEXT, source TEXT,
+            token_name TEXT, client_ip TEXT, detail TEXT
         );
     """)
     con.commit()
@@ -93,3 +103,25 @@ def llmproxy_module():
     sys.path.insert(0, str(_PROXY_DIR))
     import llmproxy  # noqa: E402  (import must follow env/stub setup above)
     return llmproxy
+
+
+@pytest.fixture
+def frontier_model(llmproxy_module):
+    """Registers a fake enabled frontier provider/model (with a real
+    encrypted API key in the `secrets` table, not just config) so
+    _get_frontier_target(...)/_get_fallback_frontier(...) resolve it end
+    to end, then restores the original config/secret -- these globals
+    are shared across the whole test session via the session-scoped
+    llmproxy_module fixture."""
+    llmproxy = llmproxy_module
+    original_cfg = llmproxy._frontier_cfg
+    llmproxy._frontier_cfg = {
+        "enabled": True,
+        "providers": {"testprovider": {"base_url": "https://frontier.test", "models": ["gpt-test-external"]}},
+    }
+    llmproxy._set_secret("frontier.testprovider.api_key", "test-frontier-api-key")
+    try:
+        yield "gpt-test-external"
+    finally:
+        llmproxy._frontier_cfg = original_cfg
+        llmproxy._delete_secret("frontier.testprovider.api_key")
