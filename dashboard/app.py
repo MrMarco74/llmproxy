@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -224,6 +224,10 @@ async def changelog_view(request: Request):
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_view(request: Request):
     return templates.TemplateResponse("admin.html", {"request": request})
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_view(request: Request):
+    return templates.TemplateResponse("settings.html", {"request": request})
 
 @app.get("/api/admin/clients")
 async def api_admin_clients():
@@ -460,6 +464,46 @@ async def api_log_view(request: Request):
     except Exception as e:
         return {"total": 0, "rows": [], "error": str(e)}
 
+
+# ── Chargeback / cost-allocation view ────────────────────────────────────────────
+
+@app.get("/chargeback", response_class=HTMLResponse)
+async def chargeback_view(request: Request):
+    return templates.TemplateResponse("chargeback.html", {"request": request})
+
+@app.get("/api/admin/chargeback/summary")
+async def api_chargeback_summary(request: Request):
+    try:
+        async with httpx.AsyncClient(timeout=15.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/chargeback/summary", params=request.query_params)
+            return r.json()
+    except Exception as e:
+        return {"rows": [], "error": str(e)}
+
+@app.get("/api/admin/chargeback/drilldown")
+async def api_chargeback_drilldown(request: Request):
+    try:
+        async with httpx.AsyncClient(timeout=15.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/chargeback/drilldown", params=request.query_params)
+            return r.json()
+    except Exception as e:
+        return {"rows": [], "error": str(e)}
+
+@app.get("/api/admin/chargeback/detail")
+async def api_chargeback_detail(request: Request):
+    try:
+        async with httpx.AsyncClient(timeout=15.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/chargeback/detail", params=request.query_params)
+            return r.json()
+    except Exception as e:
+        return {"total": 0, "rows": [], "error": str(e)}
+
+@app.get("/api/admin/chargeback/export")
+async def api_chargeback_export(request: Request):
+    async with httpx.AsyncClient(timeout=30.0, headers=_ADMIN_HEADERS) as client:
+        r = await client.get(f"{PROXY_URL}/admin/chargeback/export", params=request.query_params)
+        return Response(content=r.content, media_type=r.headers.get("content-type", "application/octet-stream"),
+                         headers={"Content-Disposition": r.headers.get("content-disposition", "attachment")})
 
 
 @app.post("/api/admin/test_frontier")
@@ -762,6 +806,31 @@ async def api_llm_config(request: Request):
         data = await request.json()
         async with httpx.AsyncClient(timeout=3.0, headers=_ADMIN_HEADERS) as client:
             r = await client.post(f"{PROXY_URL}/admin/llm_config", json=data)
-            return r.json()
+            # The proxy may return a streaming endpoint that concatenates
+            # multiple JSON objects (one per line).  Try the response body as-
+            # is first, then fall back to taking only the first complete JSON
+            # object if it starts with '{' but contains extra trailing data.
+            raw = r.text.strip()
+            try:
+                resp_json = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                # Try extracting just the first valid JSON object from mixed
+                # or streaming output (e.g. two consecutive JSON blobs).
+                brace_count = 0
+                end_idx = None
+                for i, ch in enumerate(raw):
+                    if ch == "{":
+                        if brace_count == 0:
+                            start = i
+                    elif ch == "}":
+                        brace_count += 1
+                        if brace_count == 0 and start is not None:
+                            end_idx = i + 1
+                            break
+                try:
+                    resp_json = json.loads(raw[start:end_idx])
+                except Exception:
+                    return {"ok": False, "error": f"Unparseable proxy response: {raw[:500]}"}
+            return JSONResponse(content=resp_json) if isinstance(resp_json, dict) else JSONResponse(content={"data": resp_json})
     except Exception as e:
         return {"ok": False, "error": str(e)}

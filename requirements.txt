@@ -5,3 +5,4 @@ websockets
 pyyaml
 presidio-analyzer
 spacy
+openpyxl

@@ -1,0 +1,348 @@
+{% extends "base.html" %}
+{% block title %}Chargeback — llmproxy{% endblock %}
+
+{% block content %}
+<div class="w-[85%] mx-auto pb-10">
+
+  <div class="flex items-center gap-4 mb-4">
+    <h1 class="text-xl font-bold text-[#b4befe]">Chargeback / Kostenverrechnung</h1>
+    <span class="text-sm text-[#7f849c]">Token- &amp; Kostenaufschlüsselung pro Client, mit Drilldown auf die anfragende Client-IP</span>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="card mb-4 flex flex-wrap gap-4 items-end sticky top-4 z-10 shadow-lg border-b border-[#313244]">
+    <div>
+      <label class="block text-xs text-[#7f849c] mb-1">Client (Token)</label>
+      <select id="cb_token" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4] w-40">
+        <option value="">Alle</option>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs text-[#7f849c] mb-1">Datum Von</label>
+      <input type="date" id="cb_from" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4]">
+    </div>
+    <div>
+      <label class="block text-xs text-[#7f849c] mb-1">Datum Bis</label>
+      <input type="date" id="cb_to" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4]">
+    </div>
+    <div>
+      <label class="block text-xs text-[#7f849c] mb-1">Gruppierung</label>
+      <select id="cb_group_by" class="bg-[#181825] border border-[#313244] rounded px-2 py-1 text-sm text-[#cdd6f4]">
+        <option value="day">Pro Tag</option>
+        <option value="month">Pro Monat</option>
+        <option value="none">Gesamter Zeitraum</option>
+      </select>
+    </div>
+    <div class="flex gap-2">
+      <button onclick="fetchChargebackTable()" class="bg-[#89b4fa] text-[#1e1e2e] px-4 py-1 rounded text-sm font-semibold hover:bg-[#b4befe]">Filtern</button>
+      <button onclick="resetFilters()" class="bg-[#313244] text-[#cdd6f4] px-4 py-1 rounded text-sm hover:bg-[#45475a]">Reset</button>
+    </div>
+
+    <div class="ml-auto flex gap-2 items-end">
+      <div class="flex bg-[#181825] border border-[#313244] rounded overflow-hidden">
+        <button id="cb_mode_summary" onclick="setMode('summary')" class="px-3 py-1 text-sm font-semibold">Aggregiert</button>
+        <button id="cb_mode_detail" onclick="setMode('detail')" class="px-3 py-1 text-sm font-semibold">Detail</button>
+      </div>
+      <a id="cb_export_csv" href="#" class="bg-[#a6e3a1] text-[#1e1e2e] px-3 py-1 rounded text-sm font-semibold hover:bg-[#94e2d5]">⬇ CSV</a>
+      <a id="cb_export_xlsx" href="#" class="bg-[#f9e2af] text-[#1e1e2e] px-3 py-1 rounded text-sm font-semibold hover:bg-[#fab387]">⬇ XLSX</a>
+    </div>
+  </div>
+
+  <div id="cb_unpriced_banner" class="hidden mb-4 text-xs text-[#f9e2af] bg-[#313244] border border-[#45475a] rounded px-3 py-2"></div>
+
+  <!-- Summary Table -->
+  <div id="cb_summary_wrap" class="card overflow-x-auto p-0 mb-6">
+    <table class="w-full text-left border-collapse">
+      <thead>
+        <tr class="border-b border-[#313244] bg-[#181825]">
+          <th class="p-3 text-xs font-semibold text-[#a6adc8]">Client</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8]">Datum</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Requests</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Prompt-Tokens</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Completion-Tokens</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Tokens gesamt</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Kosten (€)</th>
+        </tr>
+      </thead>
+      <tbody id="cb_summary_tbody">
+        <tr><td colspan="7" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Detail Table -->
+  <div id="cb_detail_wrap" class="card overflow-x-auto p-0 mb-6 hidden">
+    <table class="w-full text-left border-collapse">
+      <thead>
+        <tr class="border-b border-[#313244] bg-[#181825]">
+          <th class="p-3 text-xs font-semibold text-[#a6adc8]">Zeit</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8]">Client</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8]">IP</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8]">Modell</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Prompt</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Completion</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Gesamt</th>
+          <th class="p-3 text-xs font-semibold text-[#a6adc8] text-right">Kosten (€)</th>
+        </tr>
+      </thead>
+      <tbody id="cb_detail_tbody">
+        <tr><td colspan="8" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>
+      </tbody>
+    </table>
+    <div class="flex items-center justify-between p-3 border-t border-[#313244] text-sm">
+      <span id="cb_detail_count" class="text-[#7f849c]"></span>
+      <div class="flex gap-2 items-center">
+        <select id="cb_detail_limit" onchange="changeDetailLimit()" class="bg-[#181825] border border-[#313244] rounded px-1 text-sm">
+          <option value="25">25</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+        </select>
+        <button onclick="detailPrevPage()" id="cb_detail_prev" class="px-3 py-1 bg-[#313244] rounded text-sm disabled:opacity-50">Zurück</button>
+        <button onclick="detailNextPage()" id="cb_detail_next" class="px-3 py-1 bg-[#313244] rounded text-sm disabled:opacity-50">Weiter</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let cbMode = 'summary';
+let cbDetailPage = 1;
+let cbDetailTotal = 0;
+let cbExpanded = {};
+
+function currentFilters() {
+  return {
+    token_name: document.getElementById('cb_token').value,
+    date_from: document.getElementById('cb_from').value,
+    date_to: document.getElementById('cb_to').value,
+  };
+}
+
+async function init() {
+  await fetchClients();
+  updateExportLinks();
+  await fetchChargebackTable();
+}
+
+async function fetchClients() {
+  try {
+    const res = await fetch('/api/admin/clients');
+    if (res.ok) {
+      const data = await res.json();
+      const sel = document.getElementById('cb_token');
+      Object.keys(data.clients || {}).forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+    }
+  } catch (e) { console.error(e); }
+}
+
+function resetFilters() {
+  document.getElementById('cb_token').value = "";
+  document.getElementById('cb_from').value = "";
+  document.getElementById('cb_to').value = "";
+  document.getElementById('cb_group_by').value = "day";
+  fetchChargebackTable();
+}
+
+function setMode(mode) {
+  cbMode = mode;
+  document.getElementById('cb_mode_summary').style.background = mode === 'summary' ? '#45475a' : '';
+  document.getElementById('cb_mode_detail').style.background = mode === 'detail' ? '#45475a' : '';
+  document.getElementById('cb_summary_wrap').classList.toggle('hidden', mode !== 'summary');
+  document.getElementById('cb_detail_wrap').classList.toggle('hidden', mode !== 'detail');
+  updateExportLinks();
+  fetchChargebackTable();
+}
+setMode('summary');
+
+function fetchChargebackTable() {
+  cbExpanded = {};
+  updateExportLinks();
+  if (cbMode === 'summary') return fetchSummary();
+  cbDetailPage = 1;
+  return fetchDetail();
+}
+
+function showUnpriced(models) {
+  const banner = document.getElementById('cb_unpriced_banner');
+  if (models && models.length) {
+    banner.textContent = `⚠ Keine Preisdaten für: ${models.join(', ')} (config/pricing.yaml ergänzen — Kosten werden aktuell als 0 € gezählt)`;
+    banner.classList.remove('hidden');
+  } else {
+    banner.classList.add('hidden');
+  }
+}
+
+async function fetchSummary() {
+  const tbody = document.getElementById('cb_summary_tbody');
+  tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>';
+  const params = new URLSearchParams({ ...currentFilters(), group_by: document.getElementById('cb_group_by').value });
+  try {
+    const res = await fetch(`/api/admin/chargeback/summary?${params.toString()}`);
+    const data = await res.json();
+    showUnpriced(data.unpriced_models);
+    renderSummary(data.rows || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-[#f38ba8]">Fehler beim Laden: ${e}</td></tr>`;
+  }
+}
+
+function renderSummary(rows) {
+  const tbody = document.getElementById('cb_summary_tbody');
+  tbody.innerHTML = '';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-[#7f849c]">Keine Daten im gewählten Zeitraum.</td></tr>';
+    return;
+  }
+  rows.forEach((r, idx) => {
+    const rowKey = `${r.token_name}|${r.date || ''}`;
+    const tr = document.createElement('tr');
+    tr.className = "border-b border-[#313244] hover:bg-[#181825] cursor-pointer";
+    tr.onclick = () => toggleDrilldown(rowKey, r.token_name, tr);
+    tr.innerHTML = `
+      <td class="p-3 text-xs"><span class="text-[#89b4fa] font-mono">▸ ${escHtml(r.token_name || '—')}</span></td>
+      <td class="p-3 text-xs text-[#cdd6f4]">${r.date || 'gesamt'}</td>
+      <td class="p-3 text-xs text-right text-[#cdd6f4]">${fmt(r.requests)}</td>
+      <td class="p-3 text-xs text-right text-[#cdd6f4]">${fmt(r.prompt_tokens)}</td>
+      <td class="p-3 text-xs text-right text-[#cdd6f4]">${fmt(r.completion_tokens)}</td>
+      <td class="p-3 text-xs text-right text-[#a6e3a1]">${fmt(r.total_tokens)}</td>
+      <td class="p-3 text-xs text-right text-[#f9e2af]">${(r.cost_eur || 0).toFixed(4)}</td>
+    `;
+    tbody.appendChild(tr);
+    const detailTr = document.createElement('tr');
+    detailTr.id = `cb_drill_${cssKey(rowKey)}`;
+    detailTr.className = "hidden";
+    detailTr.innerHTML = `<td colspan="7" class="p-0"><div class="p-3 bg-[#11111b]"></div></td>`;
+    tbody.appendChild(detailTr);
+  });
+}
+
+function cssKey(k) { return k.replace(/[^a-zA-Z0-9]/g, '_'); }
+
+async function toggleDrilldown(rowKey, tokenName, headerTr) {
+  const detailTr = document.getElementById(`cb_drill_${cssKey(rowKey)}`);
+  if (!detailTr) return;
+  const isOpen = !detailTr.classList.contains('hidden');
+  if (isOpen) {
+    detailTr.classList.add('hidden');
+    return;
+  }
+  detailTr.classList.remove('hidden');
+  const container = detailTr.querySelector('div');
+  if (cbExpanded[rowKey]) return; // already loaded
+  container.innerHTML = '<span class="text-xs text-[#7f849c]">Lade IP-Aufschlüsselung...</span>';
+  try {
+    const params = new URLSearchParams({ token_name: tokenName, date_from: document.getElementById('cb_from').value, date_to: document.getElementById('cb_to').value });
+    const res = await fetch(`/api/admin/chargeback/drilldown?${params.toString()}`);
+    const data = await res.json();
+    cbExpanded[rowKey] = true;
+    if (!data.rows || !data.rows.length) {
+      container.innerHTML = '<span class="text-xs text-[#7f849c]">Keine IP-Daten.</span>';
+      return;
+    }
+    container.innerHTML = `
+      <table class="w-full text-left border-collapse">
+        <thead><tr>
+          <th class="p-2 text-[10px] text-[#7f849c]">Client-IP</th>
+          <th class="p-2 text-[10px] text-[#7f849c] text-right">Requests</th>
+          <th class="p-2 text-[10px] text-[#7f849c] text-right">Tokens gesamt</th>
+          <th class="p-2 text-[10px] text-[#7f849c] text-right">Kosten (€)</th>
+          <th class="p-2 text-[10px] text-[#7f849c]">Zuletzt gesehen</th>
+        </tr></thead>
+        <tbody>
+          ${data.rows.map(ip => `
+            <tr class="border-t border-[#313244]">
+              <td class="p-2 text-xs font-mono text-[#89b4fa]">${escHtml(ip.client_ip || '—')}</td>
+              <td class="p-2 text-xs text-right">${fmt(ip.requests)}</td>
+              <td class="p-2 text-xs text-right text-[#a6e3a1]">${fmt(ip.total_tokens)}</td>
+              <td class="p-2 text-xs text-right text-[#f9e2af]">${(ip.cost_eur || 0).toFixed(4)}</td>
+              <td class="p-2 text-xs text-[#7f849c]">${escHtml(ip.last_seen || '—')}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch (e) {
+    container.innerHTML = `<span class="text-xs text-[#f38ba8]">Fehler: ${e}</span>`;
+  }
+}
+
+async function fetchDetail() {
+  const tbody = document.getElementById('cb_detail_tbody');
+  tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-[#7f849c]">Lade Daten...</td></tr>';
+  const limit = document.getElementById('cb_detail_limit').value;
+  const offset = (cbDetailPage - 1) * limit;
+  const params = new URLSearchParams({ ...currentFilters(), limit, offset });
+  try {
+    const res = await fetch(`/api/admin/chargeback/detail?${params.toString()}`);
+    const data = await res.json();
+    showUnpriced(data.unpriced_models);
+    cbDetailTotal = data.total || 0;
+    renderDetail(data.rows || []);
+    updateDetailPager(limit);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-[#f38ba8]">Fehler beim Laden: ${e}</td></tr>`;
+  }
+}
+
+function renderDetail(rows) {
+  const tbody = document.getElementById('cb_detail_tbody');
+  tbody.innerHTML = '';
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-[#7f849c]">Keine Daten im gewählten Zeitraum.</td></tr>';
+    return;
+  }
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.className = "border-b border-[#313244] hover:bg-[#181825]";
+    tr.innerHTML = `
+      <td class="p-3 text-xs text-[#7f849c]">${escHtml(r.ts || '')}</td>
+      <td class="p-3 text-xs font-mono text-[#89b4fa]">${escHtml(r.token_name || '—')}</td>
+      <td class="p-3 text-xs font-mono text-[#cdd6f4]">${escHtml(r.client_ip || '—')}</td>
+      <td class="p-3 text-xs text-[#cdd6f4]">${escHtml(r.model || '')}</td>
+      <td class="p-3 text-xs text-right">${fmt(r.prompt_tokens)}</td>
+      <td class="p-3 text-xs text-right">${fmt(r.completion_tokens)}</td>
+      <td class="p-3 text-xs text-right text-[#a6e3a1]">${fmt(r.total_tokens)}</td>
+      <td class="p-3 text-xs text-right text-[#f9e2af]">${(r.cost_eur || 0).toFixed(4)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function updateDetailPager(limit) {
+  document.getElementById('cb_detail_count').textContent =
+    `${cbDetailTotal} Requests — Seite ${cbDetailPage} / ${Math.max(1, Math.ceil(cbDetailTotal / limit))}`;
+  document.getElementById('cb_detail_prev').disabled = cbDetailPage <= 1;
+  document.getElementById('cb_detail_next').disabled = cbDetailPage * limit >= cbDetailTotal;
+}
+
+function changeDetailLimit() { cbDetailPage = 1; fetchDetail(); }
+function detailPrevPage() { if (cbDetailPage > 1) { cbDetailPage--; fetchDetail(); } }
+function detailNextPage() {
+  const limit = document.getElementById('cb_detail_limit').value;
+  if (cbDetailPage * limit < cbDetailTotal) { cbDetailPage++; fetchDetail(); }
+}
+
+function updateExportLinks() {
+  const base = { ...currentFilters(), view: cbMode, format: 'csv' };
+  if (cbMode === 'summary') base.group_by = document.getElementById('cb_group_by').value;
+  const csvParams = new URLSearchParams(base);
+  const xlsxParams = new URLSearchParams({ ...base, format: 'xlsx' });
+  document.getElementById('cb_export_csv').href = `/api/admin/chargeback/export?${csvParams.toString()}`;
+  document.getElementById('cb_export_xlsx').href = `/api/admin/chargeback/export?${xlsxParams.toString()}`;
+}
+
+document.getElementById('cb_token').addEventListener('change', updateExportLinks);
+document.getElementById('cb_from').addEventListener('change', updateExportLinks);
+document.getElementById('cb_to').addEventListener('change', updateExportLinks);
+document.getElementById('cb_group_by').addEventListener('change', updateExportLinks);
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+{% endblock %}

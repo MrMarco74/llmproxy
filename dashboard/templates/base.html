@@ -67,18 +67,17 @@
   <a href="/failures"class="nav-link {% if '/failures' in request.url.path %}active{% endif %}">Failures</a>
   <a href="/log"     class="nav-link {% if '/log' in request.url.path %}active{% endif %}">Log</a>
   <a href="/audit"   class="nav-link {% if '/audit' in request.url.path %}active{% endif %}">Audit</a>
+  <a href="/chargeback" class="nav-link {% if '/chargeback' in request.url.path %}active{% endif %}">Chargeback</a>
   <a href="/inference" class="nav-link {% if '/inference' in request.url.path %}active{% endif %}">Inference</a>
   <a href="/changelog" class="nav-link {% if '/changelog' in request.url.path %}active{% endif %}">Updates</a>
-  <a href="/admin"   class="nav-link {% if '/admin' in request.url.path %}active{% endif %}">Admin</a>
-  <a href="/setup"   class="nav-link {% if '/setup' in request.url.path %}active{% endif %}">Setup</a>
+  <a href="/admin"   class="nav-link {% if '/admin' in request.url.path %}active{% endif %}" style="border-right:1px solid #313244;padding-right:18px">Policies</a>
+  <a href="/settings" class="nav-link {% if '/settings' in request.url.path %}active{% endif %}">Settings</a>
+  <a href="/setup"    class="nav-link {% if '/setup' in request.url.path %}active{% endif %}" style="border-left:1px solid #313244;padding-left:18px">Documentation</a>
   <span class="ml-auto flex items-center gap-3">
     <span class="text-xs text-[#585b70]" id="last-update">—</span>
     <button id="stop-all-btn" title="Stop All / Resume" onclick="toggleStopAll()"
       style="border:none; border-radius:6px; padding:4px 12px; cursor:pointer; font-size:13px; font-weight:bold; transition:background 0.2s; background:#313244; color:#cdd6f4;">
       ⏹ Stop All
-    </button>
-    <button id="settings-btn" title="Einstellungen" onclick="openSettings()" style="background:none; border:none; cursor:pointer; font-size:18px; padding:4px 8px; border-radius:6px;">
-      ⚙️
     </button>
     <button id="notif-btn" title="Notifications">
       🔔
@@ -95,25 +94,6 @@
   </div>
   <div id="notif-list">
     <div class="notif-empty">Keine Notifications</div>
-  </div>
-</div>
-
-<!-- Settings modal -->
-<div id="settings-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; justify-content:center; align-items:center;">
-  <div style="background:#1e1e2e; border:1px solid #45475a; border-radius:8px; padding:20px; width:300px; box-shadow:0 8px 24px rgba(0,0,0,0.5);">
-    <h3 style="margin-top:0; color:#b4befe; font-size:16px;">⚙️ Einstellungen</h3>
-    <div style="margin-top:16px; display:flex; justify-content:space-between; align-items:center;">
-      <span style="font-size:14px; color:#cdd6f4;">Request Logging</span>
-      <label style="position:relative; display:inline-block; width:40px; height:20px;">
-        <input type="checkbox" id="logging-toggle" style="opacity:0; width:0; height:0;" onchange="toggleLogging(this)">
-        <span style="position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background-color:#313244; transition:.4s; border-radius:20px;" id="logging-slider"></span>
-        <span style="position:absolute; content:''; height:16px; width:16px; left:2px; bottom:2px; background-color:white; transition:.4s; border-radius:50%; pointer-events:none;" id="logging-knob"></span>
-      </label>
-    </div>
-    <div style="font-size:11px; color:#7f849c; margin-top:4px;">Deaktiviert das SQLite Logging von Requests & Fehlern auf der Festplatte.</div>
-    <div style="margin-top:20px; text-align:right;">
-      <button onclick="document.getElementById('settings-modal').style.display='none'" style="background:#313244; color:#cdd6f4; border:none; padding:6px 12px; border-radius:6px; cursor:pointer;">Schließen</button>
-    </div>
   </div>
 </div>
 
@@ -256,40 +236,6 @@ async function _initStopAllStatus() {
 }
 document.addEventListener('DOMContentLoaded', _initStopAllStatus);
 
-// ── Settings ───────────────────────────────────────────────────────────────────
-async function openSettings() {
-  document.getElementById('settings-modal').style.display = 'flex';
-  try {
-    const r = await fetch('/api/logging');
-    const data = await r.json();
-    updateToggleUI(data.enabled);
-  } catch(e) {}
-}
-
-async function toggleLogging(el) {
-  const enabled = el.checked;
-  updateToggleUI(enabled);
-  try {
-    await fetch('/api/logging', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled })
-    });
-  } catch(e) {}
-}
-
-function updateToggleUI(enabled) {
-  const slider = document.getElementById('logging-slider');
-  const knob = document.getElementById('logging-knob');
-  document.getElementById('logging-toggle').checked = enabled;
-  if (enabled) {
-    slider.style.backgroundColor = '#a6e3a1'; // green
-    knob.style.transform = 'translateX(20px)';
-  } else {
-    slider.style.backgroundColor = '#f38ba8'; // red
-    knob.style.transform = 'translateX(0)';
-  }
-}
 </script>
 {% block scripts %}{% endblock %}
 </body>

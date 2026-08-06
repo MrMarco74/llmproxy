@@ -201,6 +201,12 @@ _last_wol_sent    = 0.0
 
 _guardrails_cfg = _load_yaml("guardrails.yaml", {"enabled": False, "global_rules": [], "client_rules": {}})
 _fail2ban_cfg = _load_yaml("fail2ban.yaml", {"bans": {}})
+_pricing_cfg = _load_yaml("pricing.yaml", {"currency": "EUR", "models": {}, "default": {"input_per_1k": 0.0, "output_per_1k": 0.0}})
+
+def _model_cost_eur(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    p = _pricing_cfg.get("models", {}).get(model) or _pricing_cfg.get("default", {})
+    return (prompt_tokens or 0) / 1000 * p.get("input_per_1k", 0.0) + \
+           (completion_tokens or 0) / 1000 * p.get("output_per_1k", 0.0)
 
 from presidio_analyzer import AnalyzerEngine
 
@@ -2717,6 +2723,224 @@ async def get_usage_by_client_day(request: Request, token_name: str = "",
 
     return {"rows": rows}
 
+
+# ── Chargeback / cost-allocation API ────────────────────────────────────────────
+# Protected via _check_chargeback (accepts X-Chargeback-Token or X-Admin-Token).
+# Grouped primarily by token_name (stable client identity); drilldown breaks
+# a given token_name down by client_ip. Costs come from config/pricing.yaml —
+# models missing a price entry cost 0 and are surfaced via "unpriced_models".
+
+def _chargeback_where(token_name: str, client_ip: str, date_from: str, date_to: str):
+    where_parts = []
+    params: list = []
+    if token_name:
+        where_parts.append("token_name = ?")
+        params.append(token_name)
+    if client_ip:
+        where_parts.append("client_ip = ?")
+        params.append(client_ip)
+    if date_from:
+        where_parts.append("date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("date <= ?")
+        params.append(date_to)
+    where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    return where_sql, params
+
+def _chargeback_summary_rows(token_name: str, date_from: str, date_to: str, group_by: str):
+    where_sql, params = _chargeback_where(token_name, "", date_from, date_to)
+    date_expr = {"month": "substr(date, 1, 7)", "none": "''"}.get(group_by, "date")
+    cur = _db().execute(f"""
+        SELECT token_name, {date_expr} as bucket, model,
+               COUNT(*) as requests,
+               SUM(prompt_tokens) as prompt_tokens,
+               SUM(completion_tokens) as completion_tokens,
+               SUM(total_tokens) as total_tokens
+        FROM requests {where_sql}
+        GROUP BY token_name, bucket, model
+    """, params)
+    agg: dict[tuple, dict] = {}
+    unpriced = set()
+    for tn, bucket, model, requests, ptok, ctok, ttok in cur.fetchall():
+        row = agg.setdefault((tn, bucket), {"token_name": tn, "date": bucket, "requests": 0,
+                                             "prompt_tokens": 0, "completion_tokens": 0,
+                                             "total_tokens": 0, "cost_eur": 0.0})
+        row["requests"] += requests
+        row["prompt_tokens"] += ptok or 0
+        row["completion_tokens"] += ctok or 0
+        row["total_tokens"] += ttok or 0
+        row["cost_eur"] += _model_cost_eur(model, ptok or 0, ctok or 0)
+        if model not in _pricing_cfg.get("models", {}):
+            unpriced.add(model)
+    rows = list(agg.values())
+    for row in rows:
+        row["cost_eur"] = round(row["cost_eur"], 6)
+        if group_by == "none":
+            row.pop("date", None)
+    rows.sort(key=lambda r: r.get("date", ""), reverse=True)
+    return rows, sorted(unpriced)
+
+@app.get("/admin/chargeback/summary")
+async def chargeback_summary(request: Request, token_name: str = "",
+                              date_from: str = "", date_to: str = "",
+                              group_by: str = "day"):
+    _check_chargeback(request)
+    if group_by not in ("day", "month", "none"):
+        group_by = "day"
+    rows, unpriced = _chargeback_summary_rows(token_name, date_from, date_to, group_by)
+    return {"rows": rows, "currency": _pricing_cfg.get("currency", "EUR"), "unpriced_models": unpriced}
+
+def _chargeback_drilldown_rows(token_name: str, date_from: str, date_to: str):
+    where_sql, params = _chargeback_where(token_name, "", date_from, date_to)
+    cur = _db().execute(f"""
+        SELECT client_ip, model,
+               COUNT(*) as requests,
+               SUM(prompt_tokens) as prompt_tokens,
+               SUM(completion_tokens) as completion_tokens,
+               SUM(total_tokens) as total_tokens,
+               MAX(ts) as last_seen
+        FROM requests {where_sql}
+        GROUP BY client_ip, model
+    """, params)
+    agg: dict[str, dict] = {}
+    unpriced = set()
+    for ip, model, requests, ptok, ctok, ttok, last_seen in cur.fetchall():
+        row = agg.setdefault(ip, {"client_ip": ip, "requests": 0, "prompt_tokens": 0,
+                                   "completion_tokens": 0, "total_tokens": 0,
+                                   "cost_eur": 0.0, "last_seen": last_seen})
+        row["requests"] += requests
+        row["prompt_tokens"] += ptok or 0
+        row["completion_tokens"] += ctok or 0
+        row["total_tokens"] += ttok or 0
+        row["cost_eur"] += _model_cost_eur(model, ptok or 0, ctok or 0)
+        if last_seen and (not row["last_seen"] or last_seen > row["last_seen"]):
+            row["last_seen"] = last_seen
+        if model not in _pricing_cfg.get("models", {}):
+            unpriced.add(model)
+    rows = sorted(agg.values(), key=lambda r: -r["cost_eur"])
+    for row in rows:
+        row["cost_eur"] = round(row["cost_eur"], 6)
+    return rows, sorted(unpriced)
+
+@app.get("/admin/chargeback/drilldown")
+async def chargeback_drilldown(request: Request, token_name: str = "",
+                                date_from: str = "", date_to: str = ""):
+    _check_chargeback(request)
+    if not token_name:
+        raise HTTPException(status_code=400, detail="token_name is required")
+    rows, unpriced = _chargeback_drilldown_rows(token_name, date_from, date_to)
+    return {"token_name": token_name, "rows": rows,
+            "currency": _pricing_cfg.get("currency", "EUR"), "unpriced_models": unpriced}
+
+def _chargeback_detail_rows(token_name: str, client_ip: str, model: str,
+                             date_from: str, date_to: str, limit: int, offset: int):
+    where_parts = []
+    params: list = []
+    if token_name:
+        where_parts.append("token_name = ?")
+        params.append(token_name)
+    if client_ip:
+        where_parts.append("client_ip = ?")
+        params.append(client_ip)
+    if model:
+        where_parts.append("model LIKE ?")
+        params.append(f"%{model}%")
+    if date_from:
+        where_parts.append("date >= ?")
+        params.append(date_from)
+    if date_to:
+        where_parts.append("date <= ?")
+        params.append(date_to)
+    where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    total = _db().execute(f"SELECT COUNT(*) FROM requests {where_sql}", params).fetchone()[0]
+    cur = _db().execute(
+        f"SELECT id, ts, date, token_name, client_ip, model, "
+        f"prompt_tokens, completion_tokens, total_tokens, is_frontier "
+        f"FROM requests {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
+        params + [limit, offset]
+    )
+    cols = ["id", "ts", "date", "token_name", "client_ip", "model",
+            "prompt_tokens", "completion_tokens", "total_tokens", "is_frontier"]
+    rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    unpriced = set()
+    for row in rows:
+        row["cost_eur"] = round(_model_cost_eur(row["model"], row["prompt_tokens"], row["completion_tokens"]), 6)
+        if row["model"] not in _pricing_cfg.get("models", {}):
+            unpriced.add(row["model"])
+    return total, rows, sorted(unpriced)
+
+@app.get("/admin/chargeback/detail")
+async def chargeback_detail(request: Request, token_name: str = "", client_ip: str = "",
+                             model: str = "", date_from: str = "", date_to: str = "",
+                             limit: int = 50, offset: int = 0):
+    _check_chargeback(request)
+    limit = max(1, min(limit, 500))
+    total, rows, unpriced = _chargeback_detail_rows(token_name, client_ip, model,
+                                                      date_from, date_to, limit, offset)
+    return {"total": total, "rows": rows, "currency": _pricing_cfg.get("currency", "EUR"),
+            "unpriced_models": unpriced}
+
+_CHARGEBACK_EXPORT_ROW_CAP = 5000  # homelab-scale safety cap on detail exports
+
+@app.get("/admin/chargeback/export")
+async def chargeback_export(request: Request, view: str = "summary", format: str = "csv",
+                             token_name: str = "", client_ip: str = "", model: str = "",
+                             date_from: str = "", date_to: str = "", group_by: str = "day"):
+    _check_chargeback(request)
+    if view not in ("summary", "drilldown", "detail"):
+        raise HTTPException(status_code=400, detail="invalid view")
+    if format not in ("csv", "xlsx"):
+        raise HTTPException(status_code=400, detail="invalid format")
+
+    if view == "summary":
+        if group_by not in ("day", "month", "none"):
+            group_by = "day"
+        rows, _unpriced = _chargeback_summary_rows(token_name, date_from, date_to, group_by)
+        fieldnames = ["token_name", "requests", "prompt_tokens", "completion_tokens",
+                      "total_tokens", "cost_eur"]
+        if group_by != "none":
+            fieldnames.insert(1, "date")
+    elif view == "drilldown":
+        if not token_name:
+            raise HTTPException(status_code=400, detail="token_name is required for drilldown export")
+        rows, _unpriced = _chargeback_drilldown_rows(token_name, date_from, date_to)
+        fieldnames = ["client_ip", "requests", "prompt_tokens", "completion_tokens",
+                      "total_tokens", "cost_eur", "last_seen"]
+    else:  # detail
+        _total, rows, _unpriced = _chargeback_detail_rows(
+            token_name, client_ip, model, date_from, date_to,
+            limit=_CHARGEBACK_EXPORT_ROW_CAP, offset=0)
+        fieldnames = ["id", "ts", "date", "token_name", "client_ip", "model",
+                      "prompt_tokens", "completion_tokens", "total_tokens", "is_frontier", "cost_eur"]
+
+    filename = f"chargeback_{view}_{datetime.date.today().isoformat()}.{format}"
+
+    if format == "csv":
+        import csv
+        import io
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+        return Response(content=buf.getvalue(), media_type="text/csv",
+                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    else:
+        import io
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = view
+        ws.append(fieldnames)
+        for row in rows:
+            ws.append([row.get(f, "") for f in fieldnames])
+        buf = io.BytesIO()
+        wb.save(buf)
+        return Response(content=buf.getvalue(),
+                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
 @app.post("/admin/audit/run")
 async def run_audit(request: Request):
     _check_admin(request)
@@ -3438,12 +3662,33 @@ def _load_or_create_admin_token() -> str:
 
 _ADMIN_TOKEN = _load_or_create_admin_token()
 
+def _load_or_create_chargeback_token() -> str:
+    p = Path("/opt/llmproxy/.chargeback_token")
+    if p.exists():
+        return p.read_text().strip()
+    tok = secrets.token_urlsafe(32)
+    p.write_text(tok)
+    p.chmod(0o600)
+    logger.warning(f"[chargeback] no chargeback token found — generated a new one at {p}")
+    return tok
+
+_CHARGEBACK_TOKEN = _load_or_create_chargeback_token()
+
 GAMING_SERVICES  = ["ollama", "comfyui", "comfyui2", "open-webui"]
 RESTORE_SERVICES = ["ollama", "comfyui", "comfyui2"]
 
 def _check_admin(request: Request):
     token = request.headers.get("X-Admin-Token", "")
     if token != _ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+def _check_chargeback(request: Request):
+    """Chargeback API: accepts either the dedicated read-only chargeback
+    token (for external BI/accounting tools) or the admin token (so the
+    dashboard's existing admin-token pass-through keeps working)."""
+    admin_tok = request.headers.get("X-Admin-Token", "")
+    cb_tok = request.headers.get("X-Chargeback-Token", "")
+    if admin_tok != _ADMIN_TOKEN and cb_tok != _CHARGEBACK_TOKEN:
         raise HTTPException(status_code=403, detail="Forbidden")
 
 def _svc(action: str, service: str) -> int:

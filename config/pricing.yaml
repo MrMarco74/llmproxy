@@ -1,0 +1,20 @@
+currency: EUR
+# Preise pro 1000 Tokens. Modelle ohne Eintrag hier fallen auf `default`
+# zurück (0 € — i.d.R. lokal gehostete Ollama-Modelle ohne externe Abrechnung)
+# und werden in den Chargeback-Reports als "unpriced_models" markiert.
+models:
+  gemini-1.5-flash:
+    input_per_1k: 0.00035
+    output_per_1k: 0.00105
+  gemini-1.5-pro:
+    input_per_1k: 0.00125
+    output_per_1k: 0.005
+  anthropic/claude-3.5-sonnet:
+    input_per_1k: 0.003
+    output_per_1k: 0.015
+  anthropic/claude-3-opus:
+    input_per_1k: 0.015
+    output_per_1k: 0.075
+default:
+  input_per_1k: 0.0
+  output_per_1k: 0.0
