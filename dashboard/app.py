@@ -505,6 +505,25 @@ async def api_chargeback_export(request: Request):
         return Response(content=r.content, media_type=r.headers.get("content-type", "application/octet-stream"),
                          headers={"Content-Disposition": r.headers.get("content-disposition", "attachment")})
 
+@app.get("/api/admin/chargeback/pricing")
+async def api_chargeback_pricing_get():
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.get(f"{PROXY_URL}/admin/chargeback/pricing")
+            return r.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/admin/chargeback/pricing")
+async def api_chargeback_pricing_set(request: Request):
+    try:
+        data = await request.json()
+        async with httpx.AsyncClient(timeout=10.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/chargeback/pricing", json=data)
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 
 @app.post("/api/admin/test_frontier")
 async def api_admin_test_frontier(request: Request):

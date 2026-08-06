@@ -2894,6 +2894,28 @@ async def chargeback_detail(request: Request, token_name: str = "", client_ip: s
     return {"total": total, "rows": rows, "currency": _pricing_cfg.get("currency", "EUR"),
             "unpriced_models": unpriced}
 
+@app.get("/admin/chargeback/pricing")
+async def get_chargeback_pricing(request: Request):
+    _check_chargeback(request)
+    return _pricing_cfg
+
+@app.post("/admin/chargeback/pricing")
+async def set_chargeback_pricing(request: Request):
+    # Mutating, so full admin only (unlike the read-only chargeback endpoints
+    # above) -- config/pricing.yaml is seeded once and never overwritten by
+    # deploys afterwards (same as clients.yaml etc.), so this is the only way
+    # to update live prices without hand-editing the file on the host.
+    _check_admin(request)
+    global _pricing_cfg
+    try:
+        data = await request.json()
+        _pricing_cfg = data
+        with open(CONFIG_DIR / "pricing.yaml", "w") as f:
+            yaml.safe_dump(_pricing_cfg, f)
+        return {"ok": True, "config": _pricing_cfg}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 _CHARGEBACK_EXPORT_ROW_CAP = 5000  # homelab-scale safety cap on detail exports
 
 @app.get("/admin/chargeback/export")

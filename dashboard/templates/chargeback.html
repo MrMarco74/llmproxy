@@ -7,6 +7,22 @@
   <div class="flex items-center gap-4 mb-4">
     <h1 class="text-xl font-bold text-[#b4befe]">Chargeback / Kostenverrechnung</h1>
     <span class="text-sm text-[#7f849c]">Token- &amp; Kostenaufschlüsselung pro Client, mit Drilldown auf die anfragende Client-IP</span>
+    <button onclick="togglePricingEditor()" class="ml-auto bg-[#313244] text-[#cdd6f4] px-3 py-1 rounded text-sm hover:bg-[#45475a]">⚙ Preise</button>
+  </div>
+
+  <!-- Pricing Editor -->
+  <div id="cb_pricing_wrap" class="card mb-4 hidden">
+    <div class="text-sm font-semibold text-[#f9e2af] mb-2">💶 Modellpreise (config/pricing.yaml)</div>
+    <p class="text-xs text-[#7f849c] mb-2">
+      €/1k Tokens pro Modell. Modelle ohne Eintrag fallen auf <code>default</code> zurück (0€ — lokale Ollama-Modelle brauchen normalerweise keinen Eintrag).
+      Änderungen werden sofort auf dem Server gespeichert (<code>/opt/llmproxy/pricing.yaml</code>), kein Deploy nötig.
+    </p>
+    <textarea id="cb_pricing_json" class="w-full h-56 bg-[#181825] border border-[#313244] rounded p-2 text-xs font-mono text-[#cdd6f4]" spellcheck="false"></textarea>
+    <div class="flex gap-2 items-center mt-2">
+      <button onclick="savePricing()" class="bg-[#a6e3a1] text-[#1e1e2e] px-4 py-1 rounded text-sm font-semibold hover:bg-[#94e2d5]">Speichern</button>
+      <button onclick="loadPricing()" class="bg-[#313244] text-[#cdd6f4] px-4 py-1 rounded text-sm hover:bg-[#45475a]">Neu laden</button>
+      <span id="cb_pricing_status" class="text-xs"></span>
+    </div>
   </div>
 
   <!-- Filter Bar -->
@@ -348,6 +364,64 @@ document.getElementById('cb_token').addEventListener('change', updateExportLinks
 document.getElementById('cb_from').addEventListener('change', updateExportLinks);
 document.getElementById('cb_to').addEventListener('change', updateExportLinks);
 document.getElementById('cb_group_by').addEventListener('change', updateExportLinks);
+
+// ── Pricing editor ─────────────────────────────────────────────────────────
+let cbPricingLoaded = false;
+
+function togglePricingEditor() {
+  const wrap = document.getElementById('cb_pricing_wrap');
+  wrap.classList.toggle('hidden');
+  if (!wrap.classList.contains('hidden') && !cbPricingLoaded) loadPricing();
+}
+
+async function loadPricing() {
+  const status = document.getElementById('cb_pricing_status');
+  status.textContent = 'Lade...';
+  status.className = 'text-xs text-[#7f849c]';
+  try {
+    const res = await fetch('/api/admin/chargeback/pricing');
+    const data = await res.json();
+    document.getElementById('cb_pricing_json').value = JSON.stringify(data, null, 2);
+    cbPricingLoaded = true;
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = `Fehler beim Laden: ${e}`;
+    status.className = 'text-xs text-[#f38ba8]';
+  }
+}
+
+async function savePricing() {
+  const status = document.getElementById('cb_pricing_status');
+  let parsed;
+  try {
+    parsed = JSON.parse(document.getElementById('cb_pricing_json').value);
+  } catch (e) {
+    status.textContent = `Ungültiges JSON: ${e}`;
+    status.className = 'text-xs text-[#f38ba8]';
+    return;
+  }
+  status.textContent = 'Speichere...';
+  status.className = 'text-xs text-[#7f849c]';
+  try {
+    const res = await fetch('/api/admin/chargeback/pricing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(parsed)
+    });
+    const data = await res.json();
+    if (data.ok) {
+      status.textContent = '✓ Gespeichert';
+      status.className = 'text-xs text-[#a6e3a1]';
+      fetchChargebackTable();
+    } else {
+      status.textContent = `Fehler: ${data.error || 'unbekannt'}`;
+      status.className = 'text-xs text-[#f38ba8]';
+    }
+  } catch (e) {
+    status.textContent = `Fehler: ${e}`;
+    status.className = 'text-xs text-[#f38ba8]';
+  }
+}
 
 document.addEventListener('DOMContentLoaded', init);
 </script>
