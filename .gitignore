@@ -8,3 +8,5 @@ venv/
 .venv/
 *.log
 .admin_token
+*.egg-info/
+.pytest_cache/

@@ -340,6 +340,30 @@ async def _apply_rules(prompt_text: str, token_name: str, client_ip: str, body: 
                 new_body["model"] = rule.get("target_model") or DEFAULT_REDIRECT_MODEL
                 modified = True
                 _log_to_splunk("guardrail_redirected", {"token_name": token_name, "from": body.get("model"), "to": new_body["model"]})
+            if action in ("redirect_internal", "redirect_external"):
+                # Same body mutation as "redirect" -- downstream routing
+                # (_get_frontier_target/_get_fallback_frontier) is what
+                # actually decides internal vs external based on where
+                # target_model is configured. The distinct action names
+                # exist so the admin UI can show the right model picker
+                # (local vs. frontier list) for rule authors, not because
+                # the runtime behavior differs.
+                new_body["model"] = rule.get("target_model") or DEFAULT_REDIRECT_MODEL
+                modified = True
+                _log_to_splunk("guardrail_redirected", {"token_name": token_name, "from": body.get("model"),
+                                                          "to": new_body["model"], "kind": action})
+            if action == "reduce_effort_external":
+                # Standalone action: applies whenever the CURRENT target
+                # model (possibly already redirected by an earlier rule in
+                # this same list) resolves to a frontier provider. No-op
+                # for local/internal requests -- there's nothing to reduce.
+                if _get_frontier_target(new_body.get("model", "")) is not None:
+                    effort_field = rule.get("effort_field") or "reasoning_effort"
+                    effort_value = rule.get("effort_value") or "low"
+                    new_body[effort_field] = effort_value
+                    modified = True
+                    _log_to_splunk("guardrail_effort_reduced", {"token_name": token_name, "model": new_body.get("model"),
+                                                                  "field": effort_field, "value": effort_value})
             if action == "warn" and record:
                 _record_violation(token_name, client_ip, rule, prompt_text)
 
@@ -1379,6 +1403,25 @@ def _get_token_name(request: Request) -> str:
             raise HTTPException(status_code=401, detail={"error": "invalid token"})
         return token_name
     return _get_client_ip(request)
+
+def _get_actor_label(request: Request) -> str:
+    """Lenient variant of _get_token_name for audit-log attribution only
+    (e.g. _log_admin_action's "who did this" field) -- never raises. Real
+    client bearer tokens still resolve to their friendly name; an
+    api_keys-style `Authorization: Bearer key_id.secret` (used by the
+    admin/finance/automation RBAC roles, not recognized by _token_map/
+    _secret_token_map at all) falls back to a labeled key_id instead of
+    hitting _get_token_name's "invalid token" 401 -- that 401 is correct
+    behavior for actual inference-request auth, but wrong here: failing to
+    produce a friendly label for an admin action's audit entry shouldn't
+    abort the action itself."""
+    try:
+        return _get_token_name(request)
+    except HTTPException:
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer ") and "." in auth[7:]:
+            return f"api_key:{auth[7:].split('.', 1)[0]}"
+        return _get_client_ip(request)
 
 
 async def _guard_stop_all(request: Request):
@@ -2470,12 +2513,12 @@ async def get_logging_config(request: Request):
 
 @app.get("/admin/clients")
 async def get_clients_config(request: Request):
-    _check_admin(request)
+    _check_automation(request)
     return _client_cfg
 
 @app.post("/admin/clients")
 async def set_clients_config(request: Request):
-    _check_admin(request)
+    _check_automation(request)
     global _client_cfg
     try:
         data = await request.json()
@@ -2650,7 +2693,7 @@ async def set_llm_config(request: Request):
 
 @app.get("/admin/guardrails")
 async def get_guardrails_config(request: Request):
-    _check_admin(request)
+    _check_automation(request)
     # Migrate legacy flat structure on-the-fly
     cfg = dict(_guardrails_cfg)
     if "rules" in cfg and "global_rules" not in cfg:
@@ -2660,7 +2703,7 @@ async def get_guardrails_config(request: Request):
 
 @app.post("/admin/guardrails")
 async def set_guardrails_config(request: Request):
-    _check_admin(request)
+    _check_automation(request)
     global _guardrails_cfg
     try:
         data = await request.json()
@@ -2678,7 +2721,7 @@ async def set_guardrails_config(request: Request):
 
 @app.post("/admin/guardrails/simulate")
 async def simulate_guardrails(request: Request):
-    _check_admin(request)
+    _check_automation(request)
     try:
         data = await request.json()
         prompt = data.get("prompt", "")
@@ -2707,7 +2750,7 @@ async def simulate_guardrails(request: Request):
 
 @app.post("/admin/guardrails/simulate-batch")
 async def simulate_guardrails_batch(request: Request):
-    _check_admin(request)
+    _check_automation(request)
     try:
         data = await request.json()
         token_name = data.get("token_name", "")
@@ -2762,7 +2805,7 @@ async def get_log_filtered(request: Request, token_name: str = "", model: str = 
                            date_from: str = "", date_to: str = "", status: str = "",
                            search: str = "", is_frontier: str = "",
                            limit: int = 50, offset: int = 0):
-    _check_admin(request)
+    _check_automation(request)
     limit = max(1, min(limit, 500))
     where_parts = []
     params: list = []
@@ -2942,7 +2985,9 @@ def _chargeback_summary_rows(token_name: str, date_from: str, date_to: str, grou
 async def chargeback_summary(request: Request, token_name: str = "",
                               date_from: str = "", date_to: str = "",
                               group_by: str = "day"):
-    _check_chargeback(request)
+    # Also readable by automation (cost-aware guardrail/incident-response
+    # tooling), unlike pricing/export below which stay admin+finance only.
+    _authenticate(request, {"admin", "finance", "automation"})
     if group_by not in ("day", "month", "none"):
         group_by = "day"
     rows, unpriced = _chargeback_summary_rows(token_name, date_from, date_to, group_by)
@@ -2991,7 +3036,7 @@ def _chargeback_drilldown_rows(token_name: str, date_from: str, date_to: str):
 @app.get("/admin/chargeback/drilldown")
 async def chargeback_drilldown(request: Request, token_name: str = "",
                                 date_from: str = "", date_to: str = ""):
-    _check_chargeback(request)
+    _authenticate(request, {"admin", "finance", "automation"})
     if not token_name:
         raise HTTPException(status_code=400, detail="token_name is required")
     rows, unpriced = _chargeback_drilldown_rows(token_name, date_from, date_to)
@@ -3041,7 +3086,7 @@ def _chargeback_detail_rows(token_name: str, client_ip: str, model: str,
 async def chargeback_detail(request: Request, token_name: str = "", client_ip: str = "",
                              model: str = "", date_from: str = "", date_to: str = "",
                              limit: int = 50, offset: int = 0):
-    _check_chargeback(request)
+    _authenticate(request, {"admin", "finance", "automation"})
     limit = max(1, min(limit, 500))
     total, rows, unpriced = _chargeback_detail_rows(token_name, client_ip, model,
                                                       date_from, date_to, limit, offset)
@@ -3235,9 +3280,9 @@ async def create_api_key(request: Request):
     owner_type = data.get("owner_type") or "service"
     owner_name = (data.get("owner_name") or "").strip()
     role = data.get("role") or "finance"
-    if owner_type not in ("user", "service") or not owner_name or role not in ("admin", "finance"):
+    if owner_type not in ("user", "service") or not owner_name or role not in ("admin", "finance", "automation"):
         raise HTTPException(status_code=400,
-                             detail="owner_type ('user'|'service'), owner_name and role ('admin'|'finance') are required")
+                             detail="owner_type ('user'|'service'), owner_name and role ('admin'|'finance'|'automation') are required")
     key_id = "kc_" + secrets.token_hex(6)
     secret = secrets.token_urlsafe(32)
     secret_hash = bcrypt.hashpw(secret.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -3358,7 +3403,7 @@ Antworte auf Deutsch, in Stichpunkten pro Abschnitt.
 
 @app.get("/admin/bans")
 async def get_bans(request: Request):
-    _check_admin(request)
+    _check_automation(request)
     import time
     now = time.time()
     active_bans = {k: v for k, v in _fail2ban_cfg.get("bans", {}).items() if v > now}
@@ -3366,7 +3411,7 @@ async def get_bans(request: Request):
 
 @app.post("/admin/unban")
 async def unban_token(request: Request, token_name: str):
-    _check_admin(request)
+    _check_automation(request)
     if token_name in _fail2ban_cfg.get("bans", {}):
         del _fail2ban_cfg["bans"][token_name]
         with open(CONFIG_DIR / "fail2ban.yaml", "w") as f:
@@ -3374,7 +3419,7 @@ async def unban_token(request: Request, token_name: str):
         # Clear strikes
         if hasattr(_record_violation, "strikes") and token_name in _record_violation.strikes:
             del _record_violation.strikes[token_name]
-        _log_admin_action("unban", "admin", _get_client_ip(request), _get_token_name(request), f"unbanned {token_name}")
+        _log_admin_action("unban", "admin", _get_client_ip(request), _get_actor_label(request), f"unbanned {token_name}")
         return {"ok": True, "unbanned": token_name}
     return {"ok": False, "error": "Token not banned"}
 
@@ -3383,7 +3428,7 @@ async def get_admin_actions(request: Request, limit: int = 100):
     """Audit-Trail für /maintenance/*-Aktionen — wer/was/wann hat den Proxy
     gesperrt, VRAM geleert, etc. `source` unterscheidet 'admin' (per
     X-Admin-Token) von 'auto' (ComfyUI-Queue-Poller)."""
-    _check_admin(request)
+    _check_automation(request)
     limit = max(1, min(limit, 500))
     try:
         cur = _db().execute(
@@ -4155,6 +4200,15 @@ def _check_admin(request: Request):
 
 def _check_chargeback(request: Request):
     _authenticate(request, {"admin", "finance"})
+
+def _check_automation(request: Request):
+    """Scoped role for external automated processes (incident-response
+    tooling, abuse/cost-control pipelines) integrating via the MCP server
+    (see mcp_server/llmproxy_mcp/) -- deliberately narrower than admin:
+    guardrails, client management, bans, log/chargeback reads. Excludes
+    all /maintenance/* operational-control endpoints and chargeback
+    pricing, which stay admin(+finance)-only."""
+    _authenticate(request, {"admin", "automation"})
 
 def _svc(action: str, service: str) -> int:
     r = subprocess.run(["sudo", "systemctl", action, service],

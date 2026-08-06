@@ -1042,7 +1042,10 @@ const ACTION_OPTS = [
     { value: 'silent',  label: 'Silent (blockieren als 200 OK)' },
     { value: 'warn',    label: 'Warn (nur loggen)' },
     { value: 'rewrite', label: 'Rewrite (DLP maskieren)' },
-    { value: 'redirect',label: 'Redirect (zu lokalem Fallback)' }
+    { value: 'redirect',label: 'Redirect (zu lokalem Fallback)' },
+    { value: 'redirect_internal', label: 'Redirect → internes Modell' },
+    { value: 'redirect_external', label: 'Redirect → externes Modell (Frontier)' },
+    { value: 'reduce_effort_external', label: 'Effort reduzieren (externes Modell)' },
 ];
 const MODE_OPTS = [
     { value: 'enforce', label: 'Enforce' },
@@ -1085,10 +1088,24 @@ function renderGuardrailRules() {
             <select class="rule-action bg-[#1e1e2e] border border-[#313244] rounded px-1 py-1 text-xs text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'action', this.value)">
                 ${_sel(ACTION_OPTS, rule.action || 'deny')}
             </select>
-            ${rule.action === 'redirect' ? `
-            <select class="rule-target-model bg-[#1e1e2e] border border-[#89b4fa] rounded px-1 py-1 text-xs text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'target_model', this.value)" title="Ziel-Modell bei Redirect">
+            ${(rule.action === 'redirect' || rule.action === 'redirect_internal') ? `
+            <select class="rule-target-model bg-[#1e1e2e] border border-[#89b4fa] rounded px-1 py-1 text-xs text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'target_model', this.value)" title="Ziel-Modell (lokal)">
                 ${_sel(localModels.map(m => ({value: m, label: m})), rule.target_model || 'qwen3:8b')}
             </select>` : ''}
+            ${rule.action === 'redirect_external' ? `
+            <select class="rule-target-model bg-[#1e1e2e] border border-[#fab387] rounded px-1 py-1 text-xs text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'target_model', this.value)" title="Ziel-Modell (Frontier)">
+                ${frontierModels.length ? _sel(frontierModels.map(m => ({value: m, label: m})), rule.target_model || frontierModels[0])
+                                        : '<option value="">Keine Frontier-Modelle konfiguriert</option>'}
+            </select>` : ''}
+            ${rule.action === 'reduce_effort_external' ? `
+            <input type="text" class="rule-effort-field w-32 bg-[#1e1e2e] border border-[#fab387] rounded px-2 py-1 text-xs text-[#cdd6f4] font-mono"
+                placeholder="reasoning_effort" title="Feldname im Request-Body"
+                value="${escHtml(rule.effort_field || '')}"
+                oninput="updateGuardrailRule(${i}, 'effort_field', this.value)">
+            <input type="text" class="rule-effort-value w-20 bg-[#1e1e2e] border border-[#fab387] rounded px-2 py-1 text-xs text-[#cdd6f4] font-mono"
+                placeholder="low" title="Wert für dieses Feld"
+                value="${escHtml(rule.effort_value || '')}"
+                oninput="updateGuardrailRule(${i}, 'effort_value', this.value)">` : ''}
             <select class="rule-mode bg-[#1e1e2e] border border-[#313244] rounded px-1 py-1 text-xs text-[#cdd6f4]" onchange="updateGuardrailRule(${i}, 'mode', this.value)">
                 ${_sel(MODE_OPTS, rule.mode || 'enforce')}
             </select>
