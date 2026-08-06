@@ -3033,6 +3033,130 @@ async def chargeback_export(request: Request, view: str = "summary", format: str
                          headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+# ── User accounts + API keys (RBAC) ─────────────────────────────────────────────
+# Must be defined before the catch-all "/{path:path}" passthrough route
+# further down (it forwards anything unmatched straight to Ollama, which
+# would otherwise silently swallow these paths -- same constraint as the
+# other pre-catch-all routes noted near _model_catalog).
+#
+# /admin/auth/verify is unauthenticated by design (it's the login endpoint)
+# -- same network-trust posture as every other /admin/* route today (LAN
+# reachability, no rate limiting), not a new exposure.
+@app.post("/admin/auth/verify")
+async def auth_verify(request: Request):
+    data = await request.json()
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    row = _db().execute(
+        "SELECT password_hash, role, disabled FROM users WHERE username = ?", (username,)
+    ).fetchone()
+    if not row or row[2] or not bcrypt.checkpw(password.encode("utf-8"), row[0].encode("utf-8")):
+        return {"ok": False}
+    _db().execute("UPDATE users SET last_login_at = ? WHERE username = ?",
+                   (datetime.datetime.utcnow().isoformat(), username))
+    _db().commit()
+    return {"ok": True, "role": row[1]}
+
+_ROLES = ("admin", "finance", "viewer")
+
+@app.get("/admin/users")
+async def list_users(request: Request):
+    _check_admin(request)
+    cols = ["id", "username", "role", "created_at", "last_login_at", "disabled"]
+    rows = _db().execute(f"SELECT {', '.join(cols)} FROM users ORDER BY username").fetchall()
+    return {"users": [dict(zip(cols, r)) for r in rows]}
+
+@app.post("/admin/users")
+async def create_user(request: Request):
+    _check_admin(request)
+    data = await request.json()
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    role = data.get("role") or "viewer"
+    if not username or not password or role not in _ROLES:
+        raise HTTPException(status_code=400, detail=f"username, password and role (one of {_ROLES}) are required")
+    pw_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    try:
+        _db().execute(
+            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            (username, pw_hash, role, datetime.datetime.utcnow().isoformat())
+        )
+        _db().commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="username already exists")
+    return {"ok": True, "username": username, "role": role}
+
+@app.post("/admin/users/{username}")
+async def update_user(username: str, request: Request):
+    """Change role/password and/or enable/disable an existing user."""
+    _check_admin(request)
+    data = await request.json()
+    sets, params = [], []
+    if "role" in data:
+        if data["role"] not in _ROLES:
+            raise HTTPException(status_code=400, detail=f"role must be one of {_ROLES}")
+        sets.append("role = ?"); params.append(data["role"])
+    if data.get("password"):
+        sets.append("password_hash = ?")
+        params.append(bcrypt.hashpw(data["password"].encode("utf-8"), bcrypt.gensalt()).decode("utf-8"))
+    if "disabled" in data:
+        sets.append("disabled = ?"); params.append(1 if data["disabled"] else 0)
+    if not sets:
+        raise HTTPException(status_code=400, detail="nothing to update")
+    params.append(username)
+    _db().execute(f"UPDATE users SET {', '.join(sets)} WHERE username = ?", params)
+    _db().commit()
+    return {"ok": True}
+
+@app.delete("/admin/users/{username}")
+async def delete_user(username: str, request: Request):
+    """Soft-delete: disables the account rather than removing the row, so
+    admin_actions/audit history referencing it stays meaningful."""
+    _check_admin(request)
+    _db().execute("UPDATE users SET disabled = 1 WHERE username = ?", (username,))
+    _db().commit()
+    return {"ok": True}
+
+@app.get("/admin/api_keys")
+async def list_api_keys(request: Request):
+    _check_admin(request)
+    cols = ["key_id", "owner_type", "owner_name", "role", "created_at", "last_used_at", "disabled"]
+    rows = _db().execute(f"SELECT {', '.join(cols)} FROM api_keys ORDER BY owner_name").fetchall()
+    return {"api_keys": [dict(zip(cols, r)) for r in rows]}
+
+@app.post("/admin/api_keys")
+async def create_api_key(request: Request):
+    """Returns the plaintext secret once -- it is never recoverable again
+    (only the bcrypt hash is stored), same one-time-reveal convention as
+    the .admin_token file."""
+    _check_admin(request)
+    data = await request.json()
+    owner_type = data.get("owner_type") or "service"
+    owner_name = (data.get("owner_name") or "").strip()
+    role = data.get("role") or "finance"
+    if owner_type not in ("user", "service") or not owner_name or role not in ("admin", "finance"):
+        raise HTTPException(status_code=400,
+                             detail="owner_type ('user'|'service'), owner_name and role ('admin'|'finance') are required")
+    key_id = "kc_" + secrets.token_hex(6)
+    secret = secrets.token_urlsafe(32)
+    secret_hash = bcrypt.hashpw(secret.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    _db().execute(
+        "INSERT INTO api_keys (key_id, secret_hash, owner_type, owner_name, role, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (key_id, secret_hash, owner_type, owner_name, role, datetime.datetime.utcnow().isoformat())
+    )
+    _db().commit()
+    return {"ok": True, "key_id": key_id, "bearer": f"{key_id}.{secret}",
+            "note": "This secret is shown once and cannot be recovered — store it now."}
+
+@app.delete("/admin/api_keys/{key_id}")
+async def revoke_api_key(key_id: str, request: Request):
+    _check_admin(request)
+    _db().execute("UPDATE api_keys SET disabled = 1 WHERE key_id = ?", (key_id,))
+    _db().commit()
+    return {"ok": True}
+
+
 @app.post("/admin/audit/run")
 async def run_audit(request: Request):
     _check_admin(request)
@@ -3848,124 +3972,6 @@ def _check_admin(request: Request):
 
 def _check_chargeback(request: Request):
     _authenticate(request, {"admin", "finance"})
-
-# ── User accounts + API keys (RBAC) ─────────────────────────────────────────────
-# Unauthenticated by design (it's the login endpoint) -- same network-trust
-# posture as every other /admin/* route today (LAN reachability, no rate
-# limiting), not a new exposure.
-@app.post("/admin/auth/verify")
-async def auth_verify(request: Request):
-    data = await request.json()
-    username = (data.get("username") or "").strip()
-    password = data.get("password") or ""
-    row = _db().execute(
-        "SELECT password_hash, role, disabled FROM users WHERE username = ?", (username,)
-    ).fetchone()
-    if not row or row[2] or not bcrypt.checkpw(password.encode("utf-8"), row[0].encode("utf-8")):
-        return {"ok": False}
-    _db().execute("UPDATE users SET last_login_at = ? WHERE username = ?",
-                   (datetime.datetime.utcnow().isoformat(), username))
-    _db().commit()
-    return {"ok": True, "role": row[1]}
-
-_ROLES = ("admin", "finance", "viewer")
-
-@app.get("/admin/users")
-async def list_users(request: Request):
-    _check_admin(request)
-    cols = ["id", "username", "role", "created_at", "last_login_at", "disabled"]
-    rows = _db().execute(f"SELECT {', '.join(cols)} FROM users ORDER BY username").fetchall()
-    return {"users": [dict(zip(cols, r)) for r in rows]}
-
-@app.post("/admin/users")
-async def create_user(request: Request):
-    _check_admin(request)
-    data = await request.json()
-    username = (data.get("username") or "").strip()
-    password = data.get("password") or ""
-    role = data.get("role") or "viewer"
-    if not username or not password or role not in _ROLES:
-        raise HTTPException(status_code=400, detail=f"username, password and role (one of {_ROLES}) are required")
-    pw_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-    try:
-        _db().execute(
-            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
-            (username, pw_hash, role, datetime.datetime.utcnow().isoformat())
-        )
-        _db().commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=409, detail="username already exists")
-    return {"ok": True, "username": username, "role": role}
-
-@app.post("/admin/users/{username}")
-async def update_user(username: str, request: Request):
-    """Change role/password and/or enable/disable an existing user."""
-    _check_admin(request)
-    data = await request.json()
-    sets, params = [], []
-    if "role" in data:
-        if data["role"] not in _ROLES:
-            raise HTTPException(status_code=400, detail=f"role must be one of {_ROLES}")
-        sets.append("role = ?"); params.append(data["role"])
-    if data.get("password"):
-        sets.append("password_hash = ?")
-        params.append(bcrypt.hashpw(data["password"].encode("utf-8"), bcrypt.gensalt()).decode("utf-8"))
-    if "disabled" in data:
-        sets.append("disabled = ?"); params.append(1 if data["disabled"] else 0)
-    if not sets:
-        raise HTTPException(status_code=400, detail="nothing to update")
-    params.append(username)
-    _db().execute(f"UPDATE users SET {', '.join(sets)} WHERE username = ?", params)
-    _db().commit()
-    return {"ok": True}
-
-@app.delete("/admin/users/{username}")
-async def delete_user(username: str, request: Request):
-    """Soft-delete: disables the account rather than removing the row, so
-    admin_actions/audit history referencing it stays meaningful."""
-    _check_admin(request)
-    _db().execute("UPDATE users SET disabled = 1 WHERE username = ?", (username,))
-    _db().commit()
-    return {"ok": True}
-
-@app.get("/admin/api_keys")
-async def list_api_keys(request: Request):
-    _check_admin(request)
-    cols = ["key_id", "owner_type", "owner_name", "role", "created_at", "last_used_at", "disabled"]
-    rows = _db().execute(f"SELECT {', '.join(cols)} FROM api_keys ORDER BY owner_name").fetchall()
-    return {"api_keys": [dict(zip(cols, r)) for r in rows]}
-
-@app.post("/admin/api_keys")
-async def create_api_key(request: Request):
-    """Returns the plaintext secret once -- it is never recoverable again
-    (only the bcrypt hash is stored), same one-time-reveal convention as
-    the .admin_token file."""
-    _check_admin(request)
-    data = await request.json()
-    owner_type = data.get("owner_type") or "service"
-    owner_name = (data.get("owner_name") or "").strip()
-    role = data.get("role") or "finance"
-    if owner_type not in ("user", "service") or not owner_name or role not in ("admin", "finance"):
-        raise HTTPException(status_code=400,
-                             detail="owner_type ('user'|'service'), owner_name and role ('admin'|'finance') are required")
-    key_id = "kc_" + secrets.token_hex(6)
-    secret = secrets.token_urlsafe(32)
-    secret_hash = bcrypt.hashpw(secret.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-    _db().execute(
-        "INSERT INTO api_keys (key_id, secret_hash, owner_type, owner_name, role, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (key_id, secret_hash, owner_type, owner_name, role, datetime.datetime.utcnow().isoformat())
-    )
-    _db().commit()
-    return {"ok": True, "key_id": key_id, "bearer": f"{key_id}.{secret}",
-            "note": "This secret is shown once and cannot be recovered — store it now."}
-
-@app.delete("/admin/api_keys/{key_id}")
-async def revoke_api_key(key_id: str, request: Request):
-    _check_admin(request)
-    _db().execute("UPDATE api_keys SET disabled = 1 WHERE key_id = ?", (key_id,))
-    _db().commit()
-    return {"ok": True}
 
 def _svc(action: str, service: str) -> int:
     r = subprocess.run(["sudo", "systemctl", action, service],
