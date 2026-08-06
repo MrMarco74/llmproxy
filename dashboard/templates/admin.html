@@ -822,21 +822,31 @@ async function saveFallbackConfig() {
     }
 }
 
+const FRONTIER_KEY_MASK = '••••••••';  // must match proxy's _FRONTIER_KEY_MASK
+
 async function testFrontierProvider(btn) {
     const card = btn.closest('.provider-card');
+    const providerKey = card.dataset.key;
     const baseUrl = card.querySelector('.prov-base').value.trim();
     const apiKey = card.querySelector('.prov-key').value.trim();
-    
+
     const resultDiv = card.querySelector('.test-result');
     resultDiv.classList.remove('hidden');
     resultDiv.className = 'test-result text-xs mt-1 text-[#7f849c]';
     resultDiv.textContent = 'Testing...';
-    
+
+    // The key field holds a mask (not a usable credential) whenever it's
+    // showing an already-saved provider's key untouched -- test against
+    // the real stored key server-side instead of sending the mask string.
+    const usesSavedKey = apiKey === FRONTIER_KEY_MASK;
+    const url = usesSavedKey ? `/api/admin/test_frontier/${providerKey}` : '/api/admin/test_frontier';
+    const body = usesSavedKey ? { base_url: baseUrl } : { base_url: baseUrl, api_key: apiKey };
+
     try {
-        const res = await fetch('/api/admin/test_frontier', {
+        const res = await fetch(url, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ base_url: baseUrl, api_key: apiKey })
+            body: JSON.stringify(body)
         });
         const data = await res.json();
         if(data.ok) {
@@ -857,30 +867,38 @@ let currentModelInput = null;
 
 async function openModelBrowser(btn) {
     const card = btn.closest('.provider-card');
+    const providerKey = card.dataset.key;
     const baseUrlInput = card.querySelector('.prov-base');
     const apiKeyInput = card.querySelector('.prov-key');
     const modelsInput = card.querySelector('.prov-models');
-    
+
     currentModelInput = modelsInput;
-    
+
     const baseUrl = baseUrlInput.value.trim();
     const apiKey = apiKeyInput.value.trim();
-    
+
     if(!baseUrl) {
         alert("Please enter a Base URL first.");
         return;
     }
-    
+
     // Show modal, loading state
     document.getElementById('model-modal').classList.remove('hidden');
     document.getElementById('model-modal-content').innerHTML = '<div class="text-center py-8 text-[#7f849c]">Loading models...</div>';
     document.getElementById('model-search').value = '';
-    
+
+    // Same masked-key situation as testFrontierProvider(): an untouched
+    // key field on an already-saved provider holds the mask, not a
+    // usable credential.
+    const usesSavedKey = apiKey === FRONTIER_KEY_MASK;
+    const url = usesSavedKey ? `/api/admin/fetch_models/${providerKey}` : '/api/admin/fetch_models';
+    const body = usesSavedKey ? { base_url: baseUrl } : { base_url: baseUrl, api_key: apiKey };
+
     try {
-        const res = await fetch('/api/admin/fetch_models', {
+        const res = await fetch(url, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ base_url: baseUrl, api_key: apiKey })
+            body: JSON.stringify(body)
         });
         const data = await res.json();
         

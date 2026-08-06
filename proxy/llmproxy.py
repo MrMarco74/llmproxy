@@ -1218,7 +1218,7 @@ def _get_frontier_target(model: str) -> tuple[str, str] | None:
     for provider, config in providers.items():
         models = config.get("models", [])
         if model in models:
-            return config.get("base_url", ""), config.get("api_key", "")
+            return config.get("base_url", ""), _get_frontier_api_key(provider)
     return None
 
 
@@ -2487,10 +2487,23 @@ async def set_clients_config(request: Request):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+_FRONTIER_KEY_MASK = "••••••••"  # stands in for "a key is set" -- never the real value
+
 @app.get("/admin/frontier")
 async def get_frontier_config(request: Request):
     _check_admin(request)
-    return _frontier_cfg
+    # api_key never leaves the server in plaintext: the admin UI's password
+    # field just needs *something* to round-trip unchanged when the user
+    # edits base_url/models without touching the key (browsers render
+    # type="password" as dots regardless of the actual string, so the
+    # literal mask value is never visible either way).
+    out = dict(_frontier_cfg)
+    out["providers"] = {}
+    for provider, config in _frontier_cfg.get("providers", {}).items():
+        pcopy = dict(config)
+        pcopy["api_key"] = _FRONTIER_KEY_MASK if _get_frontier_api_key(provider) else ""
+        out["providers"][provider] = pcopy
+    return out
 
 @app.post("/admin/frontier")
 async def set_frontier_config(request: Request):
@@ -2498,10 +2511,90 @@ async def set_frontier_config(request: Request):
     global _frontier_cfg
     try:
         data = await request.json()
+        for provider, config in data.get("providers", {}).items():
+            incoming_key = config.pop("api_key", "")
+            if incoming_key == _FRONTIER_KEY_MASK:
+                pass  # unchanged -- leave whatever's already in secrets
+            elif not incoming_key:
+                _delete_secret(_frontier_secret_name(provider))
+            else:
+                _set_secret(_frontier_secret_name(provider), incoming_key)
+        # frontier.yaml itself never stores api_key -- base_url/models only.
         _frontier_cfg = data
         with open(CONFIG_DIR / "frontier.yaml", "w") as f:
             yaml.safe_dump(_frontier_cfg, f)
-        return {"ok": True, "config": _frontier_cfg}
+        return await get_frontier_config(request)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/admin/frontier/test/{provider}")
+async def test_frontier_provider(provider: str, request: Request):
+    """Connection test using the provider's REAL stored key. Exists because
+    GET /admin/frontier only ever returns a mask for a configured key (see
+    _FRONTIER_KEY_MASK above) -- the dashboard's admin UI can no longer
+    just take whatever's in the API-key form field and test with that
+    directly, since on an already-saved provider that field holds the mask,
+    not a usable credential. This runs the actual httpx call server-side
+    instead, using _get_frontier_api_key()."""
+    _check_admin(request)
+    data = await request.json()
+    base_url = (data.get("base_url") or "").rstrip("/")
+    if not base_url:
+        return {"ok": False, "error": "Missing Base URL"}
+    api_key = _get_frontier_api_key(provider)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            r = await client.get(f"{base_url}/models", headers=headers)
+            r.raise_for_status()
+            models = r.json().get("data", [])
+            model_names = [m.get("id") for m in models if m.get("id")]
+            return {"ok": True, "count": len(model_names), "preview": model_names[:5]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/admin/frontier/models/{provider}")
+async def fetch_frontier_models(provider: str, request: Request):
+    """Same reasoning as /admin/frontier/test/{provider} above -- the
+    "Browse Models" picker for an already-saved provider can't use the
+    (masked) key from the form field, so this fetches the provider's raw
+    /models response server-side using the real stored key. Returns the
+    provider's raw JSON body unmodified; the dashboard applies the same
+    parsing/formatting it already uses for the direct-key path."""
+    _check_admin(request)
+    data = await request.json()
+    base_url = (data.get("base_url") or "").rstrip("/")
+    if not base_url:
+        return {"ok": False, "error": "Missing Base URL"}
+    api_key = _get_frontier_api_key(provider)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            r = await client.get(f"{base_url}/models", headers=headers)
+            r.raise_for_status()
+            return {"ok": True, "raw": r.json()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.get("/admin/secrets")
+async def list_secrets(request: Request):
+    """Names + whether each is configured -- never the decrypted value."""
+    _check_admin(request)
+    rows = _db().execute("SELECT name, updated_at FROM secrets ORDER BY name").fetchall()
+    return {"secrets": [{"name": n, "configured": True, "updated_at": u} for n, u in rows]}
+
+@app.post("/admin/secrets/{name}")
+async def set_secret_endpoint(name: str, request: Request):
+    _check_admin(request)
+    try:
+        data = await request.json()
+        value = data.get("value", "")
+        if not value:
+            raise HTTPException(status_code=400, detail="value is required")
+        _set_secret(name, value)
+        return {"ok": True, "name": name}
+    except HTTPException:
+        raise
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -3960,6 +4053,11 @@ def _set_secret(name: str, value: str):
     )
     con.commit()
 
+def _delete_secret(name: str):
+    con = _db()
+    con.execute("DELETE FROM secrets WHERE name = ?", (name,))
+    con.commit()
+
 _secret_token_map: dict[str, str] = {}
 
 def _build_secret_token_map():
@@ -3981,6 +4079,41 @@ def _build_secret_token_map():
             logger.warning(f"[auth] failed to decrypt {name} -- skipping")
 
 _build_secret_token_map()
+
+# ── Frontier provider API keys ──────────────────────────────────────────────────
+# Same treatment as client bearer tokens: moved out of the plaintext YAML
+# config into the encrypted `secrets` table. Unlike client tokens there's
+# no "preserve exact value" constraint here (nothing external depends on
+# reading frontier.yaml directly), so this is a straightforward move.
+
+def _frontier_secret_name(provider: str) -> str:
+    return f"frontier.{provider}.api_key"
+
+def _get_frontier_api_key(provider: str) -> str:
+    return _get_secret(_frontier_secret_name(provider)) or ""
+
+def _migrate_frontier_api_keys():
+    """One-time startup migration: any provider in frontier.yaml still
+    carrying a plaintext `api_key` gets it moved into `secrets` and
+    stripped from the file. Safe to run on every startup -- a no-op once
+    migrated (checks _get_secret first, so it won't blow away a key set
+    afterwards via the admin UI/API with an empty leftover config value)."""
+    providers = _frontier_cfg.get("providers", {})
+    changed = False
+    for provider, config in providers.items():
+        plain_key = config.get("api_key")
+        if not plain_key:
+            continue
+        if not _get_secret(_frontier_secret_name(provider)):
+            _set_secret(_frontier_secret_name(provider), plain_key)
+            logger.warning(f"[secrets] migrated frontier.yaml api_key for provider '{provider}' into encrypted storage")
+        del config["api_key"]
+        changed = True
+    if changed:
+        with open(CONFIG_DIR / "frontier.yaml", "w") as f:
+            yaml.safe_dump(_frontier_cfg, f)
+
+_migrate_frontier_api_keys()
 
 GAMING_SERVICES  = ["ollama", "comfyui", "comfyui2", "open-webui"]
 RESTORE_SERVICES = ["ollama", "comfyui", "comfyui2"]

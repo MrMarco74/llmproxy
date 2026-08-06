@@ -679,17 +679,57 @@ async def api_admin_test_frontier(request: Request):
         api_key = data.get("api_key", "")
         if not base_url:
             return {"ok": False, "error": "Missing Base URL"}
-            
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
             r = await client.get(f"{base_url}/models", headers=headers)
             r.raise_for_status()
-            
+
             models = r.json().get("data", [])
             model_names = [m.get("id") for m in models if m.get("id")]
             return {"ok": True, "count": len(model_names), "preview": model_names[:5]}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+@app.post("/api/admin/test_frontier/{provider}")
+async def api_admin_test_frontier_saved(provider: str, request: Request):
+    """For an already-saved provider: the API-key form field holds a mask,
+    not a usable credential (see /admin/frontier's _FRONTIER_KEY_MASK), so
+    testing has to happen on the proxy using its real stored secret."""
+    try:
+        data = await request.json()
+        async with httpx.AsyncClient(timeout=15.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/frontier/test/{provider}",
+                                   json={"base_url": data.get("base_url", "")})
+            return r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def _parse_frontier_models(raw_json: dict) -> list[dict]:
+    models = raw_json.get("data", [])
+    result = []
+    for m in models:
+        if not m.get("id"): continue
+        cost_p = "N/A"
+        cost_c = "N/A"
+        if "pricing" in m:
+            # OpenRouter format
+            p = m["pricing"].get("prompt")
+            c = m["pricing"].get("completion")
+            try:
+                cost_p = f"${float(p)*1000000:.2f}/1M" if p else "N/A"
+            except: pass
+            try:
+                cost_c = f"${float(c)*1000000:.2f}/1M" if c else "N/A"
+            except: pass
+        result.append({
+            "id": m.get("id"),
+            "name": m.get("name") or m.get("id"),
+            "cost_prompt": cost_p,
+            "cost_completion": cost_c
+        })
+    result.sort(key=lambda x: x["id"].lower())
+    return result
 
 @app.post("/api/admin/fetch_models")
 async def api_admin_fetch_models(request: Request):
@@ -699,39 +739,29 @@ async def api_admin_fetch_models(request: Request):
         api_key = data.get("api_key", "")
         if not base_url:
             return {"ok": False, "error": "Missing Base URL"}
-            
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
             r = await client.get(f"{base_url}/models", headers=headers)
             r.raise_for_status()
-            
-            models = r.json().get("data", [])
-            result = []
-            for m in models:
-                if not m.get("id"): continue
-                cost_p = "N/A"
-                cost_c = "N/A"
-                if "pricing" in m:
-                    # OpenRouter format
-                    p = m["pricing"].get("prompt")
-                    c = m["pricing"].get("completion")
-                    try:
-                        cost_p = f"${float(p)*1000000:.2f}/1M" if p else "N/A"
-                    except: pass
-                    try:
-                        cost_c = f"${float(c)*1000000:.2f}/1M" if c else "N/A"
-                    except: pass
-                result.append({
-                    "id": m.get("id"),
-                    "name": m.get("name") or m.get("id"),
-                    "cost_prompt": cost_p,
-                    "cost_completion": cost_c
-                })
-            
-            # sort alphabetically by id
-            result.sort(key=lambda x: x["id"].lower())
-            
-            return {"ok": True, "models": result}
+            return {"ok": True, "models": _parse_frontier_models(r.json())}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/admin/fetch_models/{provider}")
+async def api_admin_fetch_models_saved(provider: str, request: Request):
+    """For an already-saved provider: same masked-key problem as
+    /api/admin/test_frontier/{provider} above -- fetch server-side on the
+    proxy using its real stored key, then apply the usual parsing here."""
+    try:
+        data = await request.json()
+        async with httpx.AsyncClient(timeout=15.0, headers=_ADMIN_HEADERS) as client:
+            r = await client.post(f"{PROXY_URL}/admin/frontier/models/{provider}",
+                                   json={"base_url": data.get("base_url", "")})
+            proxy_data = r.json()
+        if not proxy_data.get("ok"):
+            return proxy_data
+        return {"ok": True, "models": _parse_frontier_models(proxy_data["raw"])}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
