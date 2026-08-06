@@ -26,8 +26,13 @@ PROXY_STATUS       = f"{PROXY_URL.rstrip('/')}/status"
 PROXY_NOTIFICATIONS= f"{PROXY_URL.rstrip('/')}/notifications"
 
 # Sent on every proxy call; only the /admin/* routes actually require it.
+# Prefers the new per-identity service API key (created once by
+# scripts/migrate_auth.py, role=admin) over the legacy shared admin token
+# -- falls back to the old header if the migration hasn't been run on this
+# host yet, so the dashboard keeps working either way.
 ADMIN_TOKEN        = os.environ.get("LLMPROXY_ADMIN_TOKEN", "")
-_ADMIN_HEADERS     = {"X-Admin-Token": ADMIN_TOKEN}
+SERVICE_KEY        = os.environ.get("LLMPROXY_SERVICE_KEY", "")
+_ADMIN_HEADERS     = {"Authorization": f"Bearer {SERVICE_KEY}"} if SERVICE_KEY else {"X-Admin-Token": ADMIN_TOKEN}
 
 # Signs the login session cookie. Must come from the environment (mirrored
 # from /opt/llmproxy/.dashboard_session_secret on the proxy host by the

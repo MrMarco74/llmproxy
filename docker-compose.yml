@@ -19,6 +19,12 @@ services:
       # on the proxy host (same reasoning as LLMPROXY_ADMIN_TOKEN above; the dashboard
       # container has no writable persistent volume to generate/keep its own).
       - LLMPROXY_SESSION_SECRET=${LLMPROXY_SESSION_SECRET:-}
+      # Preferred over LLMPROXY_ADMIN_TOKEN once set: a per-identity service API
+      # key (role=admin) created by scripts/migrate_auth.py, added to
+      # /opt/llmproxy/.env by hand (not auto-managed by Ansible, since there's
+      # no on-host file to slurp it from the way .admin_token/.dashboard_session_secret
+      # work — it only exists after that script has actually been run once).
+      - LLMPROXY_SERVICE_KEY=${LLMPROXY_SERVICE_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

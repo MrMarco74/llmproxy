@@ -1362,13 +1362,19 @@ def _get_client_ip(request: Request) -> str:
 
 def _get_token_name(request: Request) -> str:
     """Resolve the calling app's identity: bearer token if present (preferred,
-    stable across DHCP), otherwise fall back to client IP (legacy callers)."""
+    stable across DHCP), otherwise fall back to client IP (legacy callers).
+
+    Checks `_token_map` (clients.yaml's plaintext `token:` field -- still
+    live for any client not yet migrated) first, then `_secret_token_map`
+    (scripts/migrate_auth.py moves existing tokens here unchanged, so
+    already-migrated clients keep authenticating with the exact same
+    bearer value without needing to be reissued a new one)."""
     auth = request.headers.get("authorization", "")
     if auth:
         if not auth.lower().startswith("bearer "):
             raise HTTPException(status_code=401, detail={"error": "invalid Authorization header"})
         token = auth[7:].strip()
-        token_name = _token_map.get(token)
+        token_name = _token_map.get(token) or _secret_token_map.get(token)
         if not token_name:
             raise HTTPException(status_code=401, detail={"error": "invalid token"})
         return token_name
@@ -3953,6 +3959,28 @@ def _set_secret(name: str, value: str):
         (name, _encrypt_secret(value), datetime.datetime.utcnow().isoformat())
     )
     con.commit()
+
+_secret_token_map: dict[str, str] = {}
+
+def _build_secret_token_map():
+    """Reverse-map bearer-token-value -> client name, sourced from the
+    `secrets` table's `client_token.*` entries (scripts/migrate_auth.py
+    moves clients.yaml's existing `token:` values here unchanged). Mirrors
+    `_build_token_map()` for clients.yaml, just against the encrypted
+    store instead. Rebuilt once at startup -- migrate_auth.py runs as a
+    separate one-off process, so llmproxy.service needs a restart to pick
+    up tokens it just migrated (already true of every deploy anyway)."""
+    global _secret_token_map
+    _secret_token_map = {}
+    rows = _db().execute("SELECT name, value_encrypted FROM secrets WHERE name LIKE 'client_token.%'").fetchall()
+    for name, blob in rows:
+        client_name = name[len("client_token."):]
+        try:
+            _secret_token_map[_decrypt_secret(blob)] = client_name
+        except Exception:
+            logger.warning(f"[auth] failed to decrypt {name} -- skipping")
+
+_build_secret_token_map()
 
 GAMING_SERVICES  = ["ollama", "comfyui", "comfyui2", "open-webui"]
 RESTORE_SERVICES = ["ollama", "comfyui", "comfyui2"]
