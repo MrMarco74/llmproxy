@@ -16,6 +16,8 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 DB_PATH            = Path(os.environ.get("DB_PATH", "/data/llmproxy.db"))
 PROXY_URL          = os.environ.get("LLMPROXY_STATUS_URL", "https://llmproxy.internal.familie-frischkorn.de:11435")
@@ -27,9 +29,137 @@ PROXY_NOTIFICATIONS= f"{PROXY_URL.rstrip('/')}/notifications"
 ADMIN_TOKEN        = os.environ.get("LLMPROXY_ADMIN_TOKEN", "")
 _ADMIN_HEADERS     = {"X-Admin-Token": ADMIN_TOKEN}
 
+# Signs the login session cookie. Must come from the environment (mirrored
+# from /opt/llmproxy/.dashboard_session_secret on the proxy host by the
+# app_llmproxy Ansible role, same flow as LLMPROXY_ADMIN_TOKEN) -- the
+# dashboard container itself has no writable persistent volume, so a
+# secret generated in-container would be lost on every redeploy.
+SESSION_SECRET     = os.environ.get("LLMPROXY_SESSION_SECRET", "")
+if not SESSION_SECRET:
+    import secrets as _secrets
+    SESSION_SECRET = _secrets.token_urlsafe(32)
+    print("[auth] WARNING: LLMPROXY_SESSION_SECRET not set -- using an ephemeral "
+          "secret for this process only. Every login will be invalidated on "
+          "restart. Set LLMPROXY_SESSION_SECRET (see docker-compose.yml).")
+
+# ── RBAC route gating ────────────────────────────────────────────────────────
+# Path-prefix based, since the app's ~60 routes are plain @app.get/@app.post
+# handlers (no APIRouter/Depends convention here to hang per-route auth off
+# of) -- a request-level middleware is the least invasive way to cover all
+# of them without touching every function signature.
+_ROLES = ("admin", "finance", "viewer")
+
+_PUBLIC_PREFIXES = ("/login", "/static", "/favicon.ico", "/healthz")
+
+_ADMIN_ONLY_PREFIXES = (
+    "/admin", "/settings",
+    "/api/admin/clients", "/api/admin/tokens", "/api/admin/frontier", "/api/admin/fallback",
+    "/api/admin/guardrails", "/api/admin/bans", "/api/admin/unban", "/api/admin/actions",
+    "/api/admin/models", "/api/admin/wol_config", "/api/admin/ping_test", "/api/admin/test_ollama",
+    "/api/admin/llm_config", "/api/admin/test_frontier", "/api/admin/fetch_models",
+    "/api/logging", "/api/cleanup", "/api/purge-vram",
+    "/api/proxy/maintenance", "/api/proxy/gaming_override",
+)
+
+_FINANCE_OR_ADMIN_PREFIXES = ("/chargeback", "/api/admin/chargeback")
+
+def _required_roles(path: str) -> set[str]:
+    if path.startswith(_FINANCE_OR_ADMIN_PREFIXES):
+        return {"admin", "finance"}
+    if path.startswith(_ADMIN_ONLY_PREFIXES):
+        return {"admin"}
+    return set(_ROLES)  # any authenticated user
+
+_FORBIDDEN_HTML = """<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8">
+<title>Kein Zugriff — llmproxy</title>
+<style>body{background:#0f1117;color:#cdd6f4;font-family:'Segoe UI',system-ui,sans-serif;
+display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.card{background:#1e1e2e;border:1px solid #313244;border-radius:8px;padding:2rem;text-align:center;max-width:24rem}
+a{color:#89b4fa}</style></head><body><div class="card">
+<div style="font-size:2rem;margin-bottom:.5rem">🔒</div>
+<div style="font-weight:600;margin-bottom:.5rem">Kein Zugriff</div>
+<div style="font-size:.875rem;color:#7f849c;margin-bottom:1rem">Deine Rolle hat keine Berechtigung für diesen Bereich.</div>
+<a href="/">Zurück zur Live-Ansicht</a></div></body></html>"""
+
+class AuthGateMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if path.startswith(_PUBLIC_PREFIXES):
+            return await call_next(request)
+
+        role = request.session.get("role")
+        if not role:
+            # Not logged in at all -> send to login, remembering where they
+            # were headed so they land there after a successful login.
+            if path.startswith("/api/"):
+                return JSONResponse({"error": "Not authenticated"}, status_code=401)
+            return RedirectResponse(f"/login?next={path}", status_code=303)
+
+        if role not in _required_roles(path):
+            # Logged in, but this role can't see this path. Must NOT
+            # redirect to /login: an authenticated user hitting /login
+            # immediately bounces back to `next` (see login_page), which
+            # would loop forever against the very path that's forbidden.
+            if path.startswith("/api/"):
+                return JSONResponse({"error": "Forbidden"}, status_code=403)
+            return HTMLResponse(_FORBIDDEN_HTML, status_code=403)
+
+        return await call_next(request)
+
 app = FastAPI(title="llmproxy Dashboard")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+# Middleware order matters: the LAST one added is OUTERMOST (runs first),
+# so SessionMiddleware must be added after AuthGateMiddleware for
+# request.session to already be populated when the auth check runs.
+app.add_middleware(AuthGateMiddleware)
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax",
+                    max_age=60 * 60 * 12)  # 12h — re-login once per workday
+
+
+@app.get("/healthz")
+async def healthz():
+    """Unauthenticated liveness probe for the Docker healthcheck -- every
+    other route now requires a session, so this exists specifically to
+    avoid the container being marked unhealthy for a reason unrelated to
+    whether it's actually up (it isn't logged in, which is normal)."""
+    return {"status": "ok"}
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/"):
+    if request.session.get("role"):
+        return RedirectResponse(next or "/", status_code=303)
+    return templates.TemplateResponse("login.html", {"request": request, "next": next, "error": None})
+
+@app.post("/login")
+async def login_submit(request: Request):
+    form = await request.form()
+    username = (form.get("username") or "").strip()
+    password = form.get("password") or ""
+    next_path = form.get("next") or "/"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(f"{PROXY_URL}/admin/auth/verify",
+                                   json={"username": username, "password": password})
+            data = r.json()
+    except Exception:
+        data = {"ok": False}
+    if not data.get("ok"):
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "next": next_path, "error": "Ungültiger Benutzername oder Passwort."},
+            status_code=401
+        )
+    request.session["username"] = username
+    request.session["role"] = data["role"]
+    return RedirectResponse(next_path if next_path.startswith("/") else "/", status_code=303)
+
+@app.post("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
 
 
 def _db() -> sqlite3.Connection:

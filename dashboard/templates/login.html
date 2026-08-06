@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login — llmproxy Dashboard</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <script src="/static/vendor/tailwind.js"></script>
+  <style>
+    body { background: #0f1117; color: #cdd6f4; font-family: 'Segoe UI', system-ui, sans-serif; }
+    .card { background: #1e1e2e; border: 1px solid #313244; border-radius: 8px; }
+  </style>
+</head>
+<body class="min-h-screen flex items-center justify-center">
+
+  <div class="card w-full max-w-sm p-8">
+    <div class="flex items-center gap-2 mb-6 justify-center">
+      <img src="/static/logo.png" alt="llmproxy" class="w-8 h-8 rounded">
+      <span class="font-bold text-[#b4befe] text-lg">llmproxy</span>
+    </div>
+
+    {% if error %}
+    <div class="mb-4 text-sm text-[#f38ba8] bg-[#313244] border border-[#45475a] rounded px-3 py-2">
+      {{ error }}
+    </div>
+    {% endif %}
+
+    <form method="post" action="/login">
+      <input type="hidden" name="next" value="{{ next }}">
+      <div class="mb-3">
+        <label class="block text-xs text-[#7f849c] mb-1">Benutzername</label>
+        <input type="text" name="username" required autofocus
+               class="w-full bg-[#181825] border border-[#313244] rounded px-3 py-2 text-sm text-[#cdd6f4]">
+      </div>
+      <div class="mb-5">
+        <label class="block text-xs text-[#7f849c] mb-1">Passwort</label>
+        <input type="password" name="password" required
+               class="w-full bg-[#181825] border border-[#313244] rounded px-3 py-2 text-sm text-[#cdd6f4]">
+      </div>
+      <button type="submit"
+              class="w-full bg-[#89b4fa] text-[#1e1e2e] px-4 py-2 rounded text-sm font-semibold hover:bg-[#b4befe]">
+        Anmelden
+      </button>
+    </form>
+  </div>
+
+</body>
+</html>

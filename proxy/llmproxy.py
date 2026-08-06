@@ -2956,11 +2956,13 @@ async def get_chargeback_pricing(request: Request):
 
 @app.post("/admin/chargeback/pricing")
 async def set_chargeback_pricing(request: Request):
-    # Mutating, so full admin only (unlike the read-only chargeback endpoints
-    # above) -- config/pricing.yaml is seeded once and never overwritten by
-    # deploys afterwards (same as clients.yaml etc.), so this is the only way
-    # to update live prices without hand-editing the file on the host.
-    _check_admin(request)
+    # finance role is explicitly allowed to edit pricing (per the RBAC role
+    # design: "finance = read chargeback + edit pricing") -- unlike every
+    # other mutating /admin/* endpoint, which stays admin-only.
+    # config/pricing.yaml is seeded once and never overwritten by deploys
+    # afterwards (same as clients.yaml etc.), so this is the only way to
+    # update live prices without hand-editing the file on the host.
+    _check_chargeback(request)
     global _pricing_cfg
     try:
         data = await request.json()
@@ -3889,6 +3891,26 @@ def _load_or_create_chargeback_token() -> str:
     return tok
 
 _CHARGEBACK_TOKEN = _load_or_create_chargeback_token()
+
+def _load_or_create_dashboard_session_secret() -> str:
+    """Signs the dashboard's login session cookie (itsdangerous, via
+    Starlette's SessionMiddleware). Lives here, not in the dashboard
+    container, because the dashboard has no writable persistent volume
+    (only a read-only DB mount) -- a secret generated inside the container
+    would be lost, invalidating every session, on the next redeploy. Same
+    generate-once-and-persist pattern as .admin_token; plumbed into the
+    dashboard container's .env by the app_llmproxy Ansible role alongside
+    LLMPROXY_ADMIN_TOKEN."""
+    p = Path("/opt/llmproxy/.dashboard_session_secret")
+    if p.exists():
+        return p.read_text().strip()
+    tok = secrets.token_urlsafe(32)
+    p.write_text(tok)
+    p.chmod(0o600)
+    logger.warning(f"[dashboard] no session secret found — generated a new one at {p}")
+    return tok
+
+_DASHBOARD_SESSION_SECRET = _load_or_create_dashboard_session_secret()
 
 def _load_or_create_secret_key() -> bytes:
     """Fernet key protecting the `secrets` table at rest (client bearer

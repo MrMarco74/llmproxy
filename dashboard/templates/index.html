@@ -8,6 +8,7 @@
        style="background:#f38ba8;color:#1e1e2e;">
     🎮 GAMING MODE — LLM-Anfragen werden geblockt
   </div>
+  {% if role == 'admin' %}
   <div class="card flex items-center gap-3 p-3 flex-none ml-auto">
     <span class="text-sm font-semibold text-[#b4befe]">Gaming Mode:</span>
     <select id="gaming-override-select" onchange="setGamingOverride(this.value)" class="bg-[#181825] text-sm text-[#cdd6f4] border border-[#313244] rounded px-2 py-1 outline-none focus:border-[#cba6f7]">
@@ -16,6 +17,7 @@
       <option value="off">Immer Aus</option>
     </select>
   </div>
+  {% endif %}
 </div>
 
 <!-- Top Stats Row -->
@@ -67,12 +69,14 @@
   <div class="card">
     <div class="flex items-center gap-3 mb-3">
       <h2 class="font-semibold text-[#b4befe]">Geladene Modelle</h2>
+      {% if role == 'admin' %}
       <button id="purge-vram-btn" onclick="purgeVram()"
               class="ml-auto text-xs px-3 py-1.5 rounded-md border border-[#f38ba8] text-[#f38ba8] hover:bg-[#f38ba8] hover:text-[#1e1e2e] transition"
               title="Entlädt alle aktuell geladenen Modelle sofort aus dem VRAM (keep_alive=0)">
         🔥 VRAM purgen
       </button>
       <span id="purge-vram-result" class="text-xs text-[#7f849c]"></span>
+      {% endif %}
     </div>
     <div id="models-list" class="space-y-2 text-sm">
       <span class="text-[#585b70]">Keine Modelle geladen.</span>
@@ -296,7 +300,8 @@ evtSrc.onmessage = (e) => {
     const data = JSON.parse(e.data);
     document.getElementById('gaming-banner').classList.toggle('hidden', !data.gaming_mode);
     if (data.gaming_override) {
-      document.getElementById('gaming-override-select').value = data.gaming_override;
+      const overrideSelect = document.getElementById('gaming-override-select');
+      if (overrideSelect) overrideSelect.value = data.gaming_override;
     }
     updateHW(data.hw);
     updateModels(data.models);

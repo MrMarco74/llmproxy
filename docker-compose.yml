@@ -15,11 +15,15 @@ services:
       # Set the real value on the host (e.g. via an env_file not committed to git),
       # not here — must match _ADMIN_TOKEN's /opt/llmproxy/.admin_token on the proxy host.
       - LLMPROXY_ADMIN_TOKEN=${LLMPROXY_ADMIN_TOKEN:-}
+      # Signs the login session cookie — must match /opt/llmproxy/.dashboard_session_secret
+      # on the proxy host (same reasoning as LLMPROXY_ADMIN_TOKEN above; the dashboard
+      # container has no writable persistent volume to generate/keep its own).
+      - LLMPROXY_SESSION_SECRET=${LLMPROXY_SESSION_SECRET:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/stats/summary')"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
       interval: 30s
       timeout: 5s
       retries: 3

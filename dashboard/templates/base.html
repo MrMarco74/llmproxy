@@ -56,6 +56,7 @@
 </head>
 <body class="min-h-screen">
 
+{% set role = request.session.get('role') %}
 <!-- Nav -->
 <nav class="flex items-center gap-2 px-6 py-3 border-b border-[#313244]" style="position:relative">
   <span class="font-bold text-[#b4befe] mr-4 flex items-center gap-2">
@@ -67,22 +68,34 @@
   <a href="/failures"class="nav-link {% if '/failures' in request.url.path %}active{% endif %}">Failures</a>
   <a href="/log"     class="nav-link {% if '/log' in request.url.path %}active{% endif %}">Log</a>
   <a href="/audit"   class="nav-link {% if '/audit' in request.url.path %}active{% endif %}">Audit</a>
+  {% if role in ('admin', 'finance') %}
   <a href="/chargeback" class="nav-link {% if '/chargeback' in request.url.path %}active{% endif %}">Chargeback</a>
+  {% endif %}
   <a href="/inference" class="nav-link {% if '/inference' in request.url.path %}active{% endif %}">Inference</a>
+  {% if role == 'admin' %}
   <a href="/admin"   class="nav-link {% if '/admin' in request.url.path %}active{% endif %}" style="border-right:1px solid #313244;padding-right:18px">Policies</a>
   <a href="/settings" class="nav-link {% if '/settings' in request.url.path %}active{% endif %}">Settings</a>
+  {% endif %}
   <a href="/setup"    class="nav-link {% if '/setup' in request.url.path %}active{% endif %}">Documentation</a>
   <a href="/changelog" class="nav-link {% if '/changelog' in request.url.path %}active{% endif %}" style="border-left:1px solid #313244;padding-left:18px">Updates</a>
   <span class="ml-auto flex items-center gap-3">
     <span class="text-xs text-[#585b70]" id="last-update">—</span>
+    {% if role == 'admin' %}
     <button id="stop-all-btn" title="Stop All / Resume" onclick="toggleStopAll()"
       style="border:none; border-radius:6px; padding:4px 12px; cursor:pointer; font-size:13px; font-weight:bold; transition:background 0.2s; background:#313244; color:#cdd6f4;">
       ⏹ Stop All
     </button>
+    {% endif %}
     <button id="notif-btn" title="Notifications">
       🔔
       <span id="notif-badge"></span>
     </button>
+    <span class="text-xs text-[#585b70] border-l border-[#313244] pl-3 flex items-center gap-2">
+      <span>{{ request.session.get('username', '') }} <span class="text-[10px] bg-[#313244] text-[#a6adc8] px-1.5 py-0.5 rounded ml-1">{{ role }}</span></span>
+      <form method="post" action="/logout" class="inline">
+        <button type="submit" class="text-[#7f849c] hover:text-[#f38ba8]" title="Logout">⎋</button>
+      </form>
+    </span>
   </span>
 </nav>
 
