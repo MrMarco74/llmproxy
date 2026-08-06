@@ -127,10 +127,21 @@ async def healthz():
     return {"status": "ok"}
 
 
+def _safe_next(path: str) -> str:
+    """Only ever redirect to a same-origin relative path. A bare
+    `startswith("/")` check still lets through protocol-relative URLs like
+    `//evil.com/phish` (browsers treat `//` as scheme-relative, i.e. an
+    absolute URL to a different host) or backslash variants some browsers
+    normalize to forward slashes -- both would otherwise let `next=` on
+    the login form redirect off-site after a successful login."""
+    if not path or not path.startswith("/") or path.startswith(("//", "/\\")):
+        return "/"
+    return path
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, next: str = "/"):
     if request.session.get("role"):
-        return RedirectResponse(next or "/", status_code=303)
+        return RedirectResponse(_safe_next(next), status_code=303)
     return templates.TemplateResponse("login.html", {"request": request, "next": next, "error": None})
 
 @app.post("/login")
@@ -154,7 +165,7 @@ async def login_submit(request: Request):
         )
     request.session["username"] = username
     request.session["role"] = data["role"]
-    return RedirectResponse(next_path if next_path.startswith("/") else "/", status_code=303)
+    return RedirectResponse(_safe_next(next_path), status_code=303)
 
 @app.post("/logout")
 async def logout(request: Request):
