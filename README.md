@@ -52,6 +52,7 @@ Client Machines (any number)
 | **Model Fingerprinting** | Baseline-tps per model, anomaly detection if performance drops by > 50% |
 | **Auto-Router** | Reroutes simple requests to smaller models (`routing.yaml`) |
 | **Idle Eviction** | Unloads inactive models from VRAM after a configured threshold (`eviction.yaml`) |
+| **Chargeback API** | Cost/usage reporting per client with IP-level drilldown and CSV/XLSX export, protected by a dedicated read-only token (`pricing.yaml`) |
 
 ## Quickstart
 
@@ -107,6 +108,7 @@ Default config files live in `config/` in this repo. `install.sh` copies them to
 - `routing.yaml` — Auto-router rules based on request complexity.
 - `eviction.yaml` — VRAM idle eviction configuration.
 - `notifications.yaml` — Notification events configuration.
+- `pricing.yaml` — €/1k-token pricing per model, used by the chargeback API (`/admin/chargeback/*`) to cost out frontier-LLM usage. Local Ollama models and any model without a price entry are counted as 0€ (surfaced as `unpriced_models` in API responses).
 
 ## Project Structure
 

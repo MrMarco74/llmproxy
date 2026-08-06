@@ -2752,25 +2752,33 @@ def _chargeback_summary_rows(token_name: str, date_from: str, date_to: str, grou
     where_sql, params = _chargeback_where(token_name, "", date_from, date_to)
     date_expr = {"month": "substr(date, 1, 7)", "none": "''"}.get(group_by, "date")
     cur = _db().execute(f"""
-        SELECT token_name, {date_expr} as bucket, model,
+        SELECT token_name, {date_expr} as bucket, model, is_frontier,
                COUNT(*) as requests,
                SUM(prompt_tokens) as prompt_tokens,
                SUM(completion_tokens) as completion_tokens,
                SUM(total_tokens) as total_tokens
         FROM requests {where_sql}
-        GROUP BY token_name, bucket, model
+        GROUP BY token_name, bucket, model, is_frontier
     """, params)
     agg: dict[tuple, dict] = {}
     unpriced = set()
-    for tn, bucket, model, requests, ptok, ctok, ttok in cur.fetchall():
+    for tn, bucket, model, is_frontier, requests, ptok, ctok, ttok in cur.fetchall():
         row = agg.setdefault((tn, bucket), {"token_name": tn, "date": bucket, "requests": 0,
+                                             "requests_local": 0, "requests_frontier": 0,
                                              "prompt_tokens": 0, "completion_tokens": 0,
-                                             "total_tokens": 0, "cost_eur": 0.0})
+                                             "total_tokens": 0, "tokens_local": 0, "tokens_frontier": 0,
+                                             "cost_eur": 0.0})
         row["requests"] += requests
         row["prompt_tokens"] += ptok or 0
         row["completion_tokens"] += ctok or 0
         row["total_tokens"] += ttok or 0
         row["cost_eur"] += _model_cost_eur(model, ptok or 0, ctok or 0)
+        if is_frontier:
+            row["requests_frontier"] += requests
+            row["tokens_frontier"] += ttok or 0
+        else:
+            row["requests_local"] += requests
+            row["tokens_local"] += ttok or 0
         if model not in _pricing_cfg.get("models", {}):
             unpriced.add(model)
     rows = list(agg.values())
@@ -2794,26 +2802,31 @@ async def chargeback_summary(request: Request, token_name: str = "",
 def _chargeback_drilldown_rows(token_name: str, date_from: str, date_to: str):
     where_sql, params = _chargeback_where(token_name, "", date_from, date_to)
     cur = _db().execute(f"""
-        SELECT client_ip, model,
+        SELECT client_ip, model, is_frontier,
                COUNT(*) as requests,
                SUM(prompt_tokens) as prompt_tokens,
                SUM(completion_tokens) as completion_tokens,
                SUM(total_tokens) as total_tokens,
                MAX(ts) as last_seen
         FROM requests {where_sql}
-        GROUP BY client_ip, model
+        GROUP BY client_ip, model, is_frontier
     """, params)
     agg: dict[str, dict] = {}
     unpriced = set()
-    for ip, model, requests, ptok, ctok, ttok, last_seen in cur.fetchall():
+    for ip, model, is_frontier, requests, ptok, ctok, ttok, last_seen in cur.fetchall():
         row = agg.setdefault(ip, {"client_ip": ip, "requests": 0, "prompt_tokens": 0,
                                    "completion_tokens": 0, "total_tokens": 0,
+                                   "tokens_local": 0, "tokens_frontier": 0,
                                    "cost_eur": 0.0, "last_seen": last_seen})
         row["requests"] += requests
         row["prompt_tokens"] += ptok or 0
         row["completion_tokens"] += ctok or 0
         row["total_tokens"] += ttok or 0
         row["cost_eur"] += _model_cost_eur(model, ptok or 0, ctok or 0)
+        if is_frontier:
+            row["tokens_frontier"] += ttok or 0
+        else:
+            row["tokens_local"] += ttok or 0
         if last_seen and (not row["last_seen"] or last_seen > row["last_seen"]):
             row["last_seen"] = last_seen
         if model not in _pricing_cfg.get("models", {}):
@@ -2897,8 +2910,9 @@ async def chargeback_export(request: Request, view: str = "summary", format: str
         if group_by not in ("day", "month", "none"):
             group_by = "day"
         rows, _unpriced = _chargeback_summary_rows(token_name, date_from, date_to, group_by)
-        fieldnames = ["token_name", "requests", "prompt_tokens", "completion_tokens",
-                      "total_tokens", "cost_eur"]
+        fieldnames = ["token_name", "requests", "requests_local", "requests_frontier",
+                      "prompt_tokens", "completion_tokens", "total_tokens",
+                      "tokens_local", "tokens_frontier", "cost_eur"]
         if group_by != "none":
             fieldnames.insert(1, "date")
     elif view == "drilldown":
@@ -2906,7 +2920,7 @@ async def chargeback_export(request: Request, view: str = "summary", format: str
             raise HTTPException(status_code=400, detail="token_name is required for drilldown export")
         rows, _unpriced = _chargeback_drilldown_rows(token_name, date_from, date_to)
         fieldnames = ["client_ip", "requests", "prompt_tokens", "completion_tokens",
-                      "total_tokens", "cost_eur", "last_seen"]
+                      "total_tokens", "tokens_local", "tokens_frontier", "cost_eur", "last_seen"]
     else:  # detail
         _total, rows, _unpriced = _chargeback_detail_rows(
             token_name, client_ip, model, date_from, date_to,

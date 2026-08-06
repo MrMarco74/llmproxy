@@ -8,6 +8,18 @@
 
 <div class="grid grid-cols-1 gap-4 mb-4 max-w-4xl">
 
+  <div class="card relative pl-10 border-l-4 border-l-[#fab387]">
+    <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#fab387] border-4 border-[#1e1e2e]"></div>
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="font-bold text-[#fab387] text-lg">v2.14.1 &mdash; Chargeback: Intern/Extern-Aufschl&uuml;sselung &amp; Preisdaten-Fix</h2>
+      <span class="text-sm text-[#7f849c]">6. August 2026</span>
+    </div>
+    <ul class="list-disc pl-5 space-y-2 text-[#cdd6f4] text-sm">
+      <li><strong>Bugfix Kosten immer 0&euro;:</strong> <code>config/pricing.yaml</code> fehlte in der Ansible-Seed-Liste, wurde also nie nach <code>/opt/llmproxy/pricing.yaml</code> kopiert &mdash; die Kostenberechnung griff dadurch immer auf den 0&euro;-Default zur&uuml;ck, auch f&uuml;r echte Frontier-Nutzung. Seed-Liste in <code>app_llmproxy</code> (LabControl) erg&auml;nzt.</li>
+      <li><strong>Intern/Extern-Aufschl&uuml;sselung:</strong> <code>/chargeback</code> zeigt jetzt explizit Tokens intern (lokale Ollama-Modelle, immer 0&euro;) getrennt von Tokens extern (Frontier-LLMs, kostenpflichtig) &mdash; sowohl in der aggregierten Ansicht als auch im IP-Drilldown und mit Intern/Extern-Badge in der Detailansicht.</li>
+    </ul>
+  </div>
+
   <div class="card relative pl-10 border-l-4 border-l-[#89b4fa]">
     <div class="absolute left-[-11px] top-4 w-5 h-5 rounded-full bg-[#89b4fa] border-4 border-[#1e1e2e]"></div>
     <div class="flex justify-between items-center mb-2">

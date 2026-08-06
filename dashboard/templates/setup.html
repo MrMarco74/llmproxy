@@ -99,7 +99,39 @@
         <span class="text-xl shrink-0">📋</span>
         <div><div class="font-medium text-[#cdd6f4]">Admin-Audit-Log</div><div class="text-[#7f849c] text-xs mt-0.5">Alle Admin-Aktionen mit Zeitstempel, Quelle und IP protokolliert.</div></div>
       </div>
+      <div class="flex gap-3">
+        <span class="text-xl shrink-0">💶</span>
+        <div><div class="font-medium text-[#cdd6f4]">Chargeback</div><div class="text-[#7f849c] text-xs mt-0.5">Kosten-/Leistungsverrechnung pro Client, mit IP-Drilldown und CSV/XLSX-Export. Eigener API-Token.</div></div>
+      </div>
     </div>
+  </div>
+
+  <!-- ── Chargeback-API ────────────────────────────────────────────────────── -->
+  <div class="card" style="border-color:#f9e2af33">
+    <div class="text-sm font-semibold text-[#f9e2af] mb-3">💶 Chargeback-API (Kosten-/Leistungsverrechnung)</div>
+    <p class="text-sm text-[#7f849c] mb-3">
+      <code class="text-[#f9e2af]">/admin/chargeback/{summary,drilldown,detail,export}</code> liefert Token-/Kostenaufschlüsselung
+      pro Client (<code class="text-[#f9e2af]">token_name</code>), inkl. Drilldown auf die einzelnen Client-IPs, die für
+      diesen Client angefragt haben — sichtbar im Dashboard unter <strong>Chargeback</strong>. Kosten werden nur für
+      externe Frontier-LLMs berechnet (aus <code class="text-[#f9e2af]">config/pricing.yaml</code>, €/1k Tokens pro Modell);
+      lokale Ollama-Modelle sind immer 0€. Modelle ohne Preiseintrag werden als <code class="text-[#f9e2af]">unpriced_models</code>
+      markiert statt stillschweigend mit 0€ gezählt zu werden.
+    </p>
+    <div class="grid grid-cols-2 gap-3 text-xs mb-3">
+      <div class="rounded p-3" style="background:#181825">
+        <div class="text-[#585b70] mb-2">Zugriff mit eigenem Chargeback-Token (read-only, z.B. für BI-/Buchhaltungstools)</div>
+        <code class="text-[#a6e3a1] block leading-relaxed">curl http://&lt;proxy-host&gt;:11435/admin/chargeback/summary \<br>&nbsp;&nbsp;-H "X-Chargeback-Token: &lt;token aus /opt/llmproxy/.chargeback_token&gt;"</code>
+      </div>
+      <div class="rounded p-3" style="background:#181825">
+        <div class="text-[#585b70] mb-2">CSV/XLSX-Export</div>
+        <code class="text-[#a6e3a1] block leading-relaxed">curl ".../admin/chargeback/export?view=summary&amp;format=xlsx" \<br>&nbsp;&nbsp;-H "X-Chargeback-Token: &lt;token&gt;" -o report.xlsx</code>
+      </div>
+    </div>
+    <p class="text-xs text-[#585b70]">
+      Der Admin-Token (<code class="text-[#89b4fa]">X-Admin-Token</code>) funktioniert ebenfalls — der separate Chargeback-Token
+      existiert nur, damit man Lesezugriff auf Kostendaten weitergeben kann, ohne volle Admin-Rechte zu gewähren.
+      Beide Tokens liegen als Datei unter <code class="text-[#89b4fa]">/opt/llmproxy/</code> (0600), nicht per API abrufbar.
+    </p>
   </div>
 
   <!-- ── Autostart <proxy-host> ─────────────────────────────────────────────────────── -->
